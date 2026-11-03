@@ -80,15 +80,17 @@ SOURCE_MODE = os.environ.get("REDDIT_SOURCE", "auto").strip().lower()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 DEBUG = os.environ.get("DEBUG") == "1"
 
-WINDOW = timedelta(hours=24)            # só posts publicados nas últimas 24 h
-SEEN_RETENTION = timedelta(days=7)      # por quanto tempo lembrar posts enviados
+# O primeiro horário de execução fica salvo em seen_posts.json (meta.started_at).
+# Nas execuções seguintes, só buscamos posts desde a última varredura, com pequena
+# sobreposição para não perder posts que apareçam atrasados no feed.
+SCAN_OVERLAP = timedelta(minutes=10)
+SEEN_RETENTION = timedelta(days=7)      # histórico de IDs e duplicatas já enviados
 CLOCK_SKEW = timedelta(minutes=10)      # tolerância para relógios dessincronizados
 ALERT_AFTER = timedelta(hours=3)        # avisa no Telegram se tudo falhar por este tempo
 ALERT_EVERY = timedelta(hours=12)       # intervalo mínimo entre avisos
 
-RSS_LIMIT = 100
+RSS_LIMIT = 50                         # reduz a leitura do feed agregado por ciclo
 RSS_CHUNK = 5                           # tamanho dos grupos no fallback do RSS
-RSS_ASSUMED_COVERAGE = timedelta(hours=6)
 ARCTIC_URL = "https://arctic-shift.photon-reddit.com/api/posts/search"
 
 MAX_WAIT = 70                           # espera máxima (s) por rate limit
@@ -237,6 +239,19 @@ DISCUSSION_TAGS = {"discussion", "meta", "question", "help", "feedback", "showca
 SEEKER_TITLE_RE = _rx(r"\bfor hire\b", r"\bhire me\b", r"\bavailable for\b", r"\bsou (?:um |uma )?editor")
 SEEKER_ANY_RE = _rx(
     r"\bhire me\b",
+    # Pessoas procurando emprego/projetos para si (inglês, espanhol e português).
+    r"\b(?:i am|i'm|im) (?:a |an )?(?:freelance |professional )?(?:video )?editors?\b",
+    r"\bi edit\b[^.!?\n]{0,120}\b(?:videos?|reels?|shorts?|tiktoks?|clips?)\b",
+    r"\b(?:looking for work as|seeking work as|looking for a job as)\b",
+    r"\bseeking (?:a )?(?:job|position|employment)\b",
+    r"\b(?:buscando|estoy buscando) (?:trabajo|empleo|proyectos?|clientes?|oportunidades)(?: como)?\b",
+    r"\b(?:busco|buscamos) (?:trabajo|empleo|proyectos?|clientes?|oportunidades)\b",
+    r"\b(?:estou )?procurando (?:trabalho|emprego|projetos?|clientes?|oportunidades)(?: como)?\b",
+    r"\b(?:procuro|busco) (?:trabalho|emprego|projetos?|clientes?)\b",
+    r"\b(?:soy|somos) (?:un |una )?(?:editor(?:a)? de video|editor de videos)\b",
+    r"\b(?:sou|somos) (?:um |uma )?(?:editor(?:a)? de video|editor de videos)\b",
+    r"\bhere(?:'s| is) my (?:portfolio|reel|showreel)\b",
+    r"\bthis is my (?:portfolio|reel|showreel)\b",
     r"\bavailable for (?:work|hire|projects?|freelance|commissions?|new clients?)\b",
     r"\bi(?:'m| am|m) (?:a|an) (?:(?!looking|need|seeking|hiring)\w+ ){0,3}editors?\b",
     r"\bmy (?:portfolio|rates?|services|reel|showreel|prices?|pricing)\b",
@@ -446,6 +461,25 @@ def get_niche(title: str, body: str = "") -> str:
         if score > best_score:
             best_name, best_score = name, score
     return best_name
+
+
+# ============================================================================
+# IDIOMA
+# ============================================================================
+_LANGUAGE_PATTERNS = {
+    "Inglês": re.compile(r"\b(?:i|the|and|for|you|your|we|our|with|looking|need|hiring|paid|budget|send|please|including|this|that)\b"),
+    "Espanhol": re.compile(r"\b(?:el|los|las|del|que|para|con|busco|buscamos|necesito|necesitamos|trabajo|contratando|presupuesto|envia|envíame)\b"),
+    "Português": re.compile(r"\b(?:os|das|dos|que|para|com|uma|estou|preciso|precisamos|procuro|procuramos|trabalho|contratando|orcamento|envie|video|voce|seu)\b"),
+    "Francês": re.compile(r"\b(?:le|les|des|que|pour|avec|recherche|besoin|nous|vous|monteur|montage|bonjour|merci)\b"),
+}
+
+
+def get_language(title: str, body: str = "") -> str:
+    """Identificação leve do idioma, sem dependências externas."""
+    text = fold(f"{title} {body}")
+    scores = {name: len(rx.findall(text)) for name, rx in _LANGUAGE_PATTERNS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] else "Não identificado"
 
 
 # ============================================================================
@@ -759,7 +793,7 @@ def fetch_arctic(sub: str, since: datetime) -> list[Post]:
     resp = http_get(ARCTIC_URL, params={
         "subreddit": sub,
         "after": since.strftime("%Y-%m-%d"),   # o filtro fino por hora é feito localmente
-        "limit": 100,
+        "limit": 50,
         "sort": "desc",
     })
     try:
@@ -775,28 +809,30 @@ def fetch_arctic(sub: str, since: datetime) -> list[Post]:
 # ============================================================================
 # COLETA (RSS -> fallback Arctic Shift)
 # ============================================================================
-def collect_posts(now: datetime, mode: str = SOURCE_MODE):
-    """Devolve (posts_por_id, fontes_ok, erros)."""
+def collect_posts(now: datetime, since: datetime, mode: str = SOURCE_MODE):
+    """Devolve (posts_por_id, fontes_ok, erros), considerando o cursor informado."""
     posts: dict[str, Post] = {}
     errors: list[str] = []
     ok = 0
-    since = now - WINDOW
     pending: list[str] = []
 
     def add(batch: list[Post]):
+        # Descarta imediatamente qualquer post anterior ao cursor/startup.
         for p in batch:
-            posts.setdefault(p.id, p)
+            if p.created >= since:
+                posts.setdefault(p.id, p)
 
     if mode in ("auto", "rss"):
         try:
             batch = fetch_rss(SUBREDDITS)
             add(batch)
             ok += 1
-            log(f"RSS: {len(batch)} posts em 1 requisição.")
-            # O feed traz só os 100 mais novos. Se ele não alcança além das últimas
-            # horas, pode haver posts não vistos -> complementa com o arquivo.
+            new_in_feed = sum(p.created >= since for p in batch)
+            log(f"RSS: {new_in_feed} posts após o cursor (limite {RSS_LIMIT}) em 1 requisição.")
+            # Se o feed atingiu o limite e todos os itens são posteriores ao cursor,
+            # ele pode ter sido truncado antes de alcançar o início da varredura.
             oldest = min((p.created for p in batch), default=None)
-            if len(batch) >= RSS_LIMIT and oldest and oldest > now - RSS_ASSUMED_COVERAGE:
+            if len(batch) >= RSS_LIMIT and oldest and oldest > since:
                 log("RSS possivelmente truncado; complementando com Arctic Shift.")
                 pending = list(SUBREDDITS)
         except FetchError as exc:
@@ -811,7 +847,8 @@ def collect_posts(now: datetime, mode: str = SOURCE_MODE):
                         batch = fetch_rss(chunk)
                         add(batch)
                         ok += 1
-                        log(f"RSS grupo {chunk}: {len(batch)} posts.")
+                        count_new = sum(p.created >= since for p in batch)
+                        log(f"RSS grupo {chunk}: {count_new} posts após o cursor.")
                     except FetchError as sub_exc:
                         errors.append(f"RSS {chunk}: {sub_exc}")
                         log(f"RSS grupo {chunk} falhou: {sub_exc}")
@@ -912,13 +949,44 @@ def build_message(post: Post) -> str:
     local_date = post.created.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
     return (
         "🤖 BOT JOB VIDEO EDITOR\n\n"
-        f"📌 VAGA: {title}\n"
-        f"💰 VALOR: {get_value(full_text)}\n"
-        f"🎬 NICHO: {get_niche(post.title, post.text)}\n"
-        f"📂 SUBREDDIT: r/{post.subreddit}\n"
-        f"🕒 PUBLICADA: {local_date}\n\n"
+        f"📌 {title}\n"
+        f"💰 {get_value(full_text)}\n"
+        f"🎬 {get_niche(post.title, post.text)}\n"
+        f"🌐 {get_language(post.title, post.text)}\n"
+        f"🕒 {local_date}\n\n"
         f"🔗 {post.url}"
     )
+
+
+
+def post_fingerprints(post: Post) -> set[str]:
+    """Chaves para reconhecer a mesma vaga mesmo com título diferente entre subreddits."""
+    import hashlib
+
+    title = fold_body(post.title)
+    body = re.sub(r"\s+", " ", fold_body(post.text)).strip()
+
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    fingerprints = {digest(f"title+body:{title}|{body}")}
+    # Crossposts às vezes recebem títulos diferentes, mas mantêm a descrição inteira.
+    # A chave extra só é usada quando há uma descrição longa e relativamente específica.
+    if len(body) >= 180 and len(body.split()) >= 30:
+        fingerprints.add(digest(f"body:{body}"))
+    return fingerprints
+
+
+def prune_fingerprints(meta: dict, now: datetime) -> None:
+    fingerprints = meta.get("sent_fingerprints")
+    if not isinstance(fingerprints, dict):
+        meta["sent_fingerprints"] = {}
+        return
+    limit = now - SEEN_RETENTION
+    meta["sent_fingerprints"] = {
+        key: value for key, value in fingerprints.items()
+        if isinstance(value, str) and (parse_date(value) or datetime.min.replace(tzinfo=timezone.utc)) >= limit
+    }
 
 
 # ============================================================================
@@ -953,20 +1021,38 @@ def main() -> int:
         return 2
 
     now = utc_now()
-    cutoff = now - WINDOW
     seen, meta = load_state()
 
-    posts, ok, errors = collect_posts(now)
+    # Esse marco é criado uma única vez e persiste entre ciclos/reexecuções do workflow.
+    started_at = parse_date(meta.get("started_at"))
+    if started_at is None:
+        started_at = now
+        meta["started_at"] = started_at.isoformat()
+        log(f"Primeiro início registrado: {started_at.astimezone(ZoneInfo('America/Sao_Paulo')):%d/%m/%Y %H:%M:%S}")
+
+    # Cursor incremental: reavalia apenas uma pequena sobreposição para capturar
+    # posts que o Reddit/arquivo possam disponibilizar com alguns minutos de atraso.
+    last_scan = parse_date(meta.get("last_scan_at")) or started_at
+    scan_since = max(started_at, last_scan - SCAN_OVERLAP)
+
+    posts, ok, errors = collect_posts(now, scan_since)
     update_health(meta, ok, errors, now)
 
     fresh = [
         p for p in posts.values()
-        if cutoff <= p.created <= now + CLOCK_SKEW and p.id not in seen
+        if scan_since <= p.created <= now + CLOCK_SKEW and p.id not in seen
     ]
     fresh.sort(key=lambda p: p.created)       # do mais antigo ao mais novo
 
     sent = 0
+    sent_fingerprints = meta.setdefault("sent_fingerprints", {})
+    batch_fingerprints: set[str] = set()
     for post in fresh:
+        fingerprints = post_fingerprints(post)
+        if fingerprints & (set(sent_fingerprints) | batch_fingerprints):
+            debug(f"[duplicada] r/{post.subreddit}: {post.title[:80]!r} -> vaga já enviada em outro post/subreddit")
+            continue
+
         decision = classify(post)
         if not decision.accepted:
             debug(f"[rejeitada] r/{post.subreddit}: {post.title[:80]!r} -> {decision.reason}")
@@ -974,6 +1060,7 @@ def main() -> int:
         message = build_message(post)
         if DRY_RUN:
             log(f"[DRY_RUN] ({decision.reason})\n{message}\n")
+            batch_fingerprints.update(fingerprints)
             continue
         try:
             send_telegram(message)
@@ -981,17 +1068,33 @@ def main() -> int:
             log(f"Erro ao enviar para o Telegram: {exc}")
             continue
         seen[post.id] = now.isoformat()
+        for fingerprint in fingerprints:
+            sent_fingerprints[fingerprint] = now.isoformat()
+        batch_fingerprints.update(fingerprints)
         sent += 1
         log(f"Enviada: {post.title[:80]} (r/{post.subreddit}, via {post.source})")
         save_state(seen, meta)                # grava a cada envio: nada se perde se a execução cair
         time.sleep(TELEGRAM_PAUSE)
 
+    # Só avança o cursor quando ao menos uma fonte respondeu. Se tudo falhar,
+    # a próxima execução retenta o mesmo intervalo em vez de pular vagas.
+    if ok > 0:
+        meta["last_scan_at"] = now.isoformat()
+
     if not DRY_RUN:
-        save_state(prune_seen(seen, now), meta)
-    log(f"Concluído. Posts lidos: {len(posts)} | novos na janela: {len(fresh)} | vagas enviadas: {sent}")
+        seen = prune_seen(seen, now)
+        prune_fingerprints(meta, now)
+        save_state(seen, meta)
+
+    log(
+        f"Concluído. Posts após o cursor: {len(posts)} | "
+        f"novos desde o último cursor: {len(fresh)} | vagas enviadas: {sent}"
+    )
+    log(f"Monitorando posts publicados a partir de {started_at.astimezone(ZoneInfo('America/Sao_Paulo')):%d/%m/%Y %H:%M:%S}.")
     if errors and ok == 0:
         log("ATENÇÃO: nenhuma fonte respondeu nesta execução.")
     return 0
+
 
 
 if __name__ == "__main__":
