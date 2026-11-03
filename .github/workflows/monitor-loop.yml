@@ -42,8 +42,6 @@ jobs:
       - name: Run job hunter in a loop
         env:
           PYTHONUNBUFFERED: "1"
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           REDDIT_SOURCE: auto
           LOOP_SECONDS: "19800"   # 5h30
           PAUSE_SECONDS: "300"    # 5 min entre execuções
@@ -53,6 +51,8 @@ jobs:
           end=$((SECONDS + LOOP_SECONDS))
           while [ "$SECONDS" -lt "$end" ]; do
             echo "::group::Ciclo $(date -u +%H:%M:%S) UTC"
+            TELEGRAM_TOKEN="${{ secrets.TELEGRAM_TOKEN }}" \
+            TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
             python main.py || echo "main.py falhou neste ciclo; tentando no próximo."
             echo "::endgroup::"
             git add seen_posts.json
