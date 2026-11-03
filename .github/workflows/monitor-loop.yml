@@ -1,0 +1,76 @@
+name: Reddit Job Hunter (loop)
+
+# Alternativa que NÃO depende do agendador (cron) do GitHub.
+# Você clica em "Run workflow" UMA vez. O job fica em loop ~5h30, roda o bot a cada
+# 5 minutos e, no fim, dispara uma nova execução de si mesmo.
+# O cron horário é só um vigia: religa o loop caso ele tenha morrido.
+#
+# ATENÇÃO: gasta ~1.440 min/dia de Actions. Grátis só em repositório PÚBLICO.
+# Use este arquivo OU o monitor.yml, nunca os dois ativos ao mesmo tempo.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: reddit-job-hunter
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run job hunter in a loop
+        env:
+          PYTHONUNBUFFERED: "1"
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REDDIT_SOURCE: auto
+          LOOP_SECONDS: "19800"   # 5h30
+          PAUSE_SECONDS: "300"    # 5 min entre execuções
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          end=$((SECONDS + LOOP_SECONDS))
+          while [ "$SECONDS" -lt "$end" ]; do
+            echo "::group::Ciclo $(date -u +%H:%M:%S) UTC"
+            python main.py || echo "main.py falhou neste ciclo; tentando no próximo."
+            echo "::endgroup::"
+            git add seen_posts.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "Update sent jobs history"
+              git pull -q --rebase --autostash || true
+              git push -q || echo "push falhou; tentando no próximo ciclo."
+            fi
+            sleep "$PAUSE_SECONDS"
+          done
+
+      # Dispara a próxima execução. workflow_dispatch feito com o GITHUB_TOKEN é
+      # permitido pelo GitHub (as demais ações com esse token não geram novos runs).
+      - name: Relaunch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          wf="$(basename "${GITHUB_WORKFLOW_REF%%@*}")"
+          gh workflow run "$wf" --ref "$GITHUB_REF_NAME"
