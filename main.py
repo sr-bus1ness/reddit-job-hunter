@@ -910,19 +910,29 @@ def prune_seen(seen: dict, now: datetime) -> dict:
 # ============================================================================
 # TELEGRAM
 # ============================================================================
-def send_telegram(message: str) -> None:
+def send_telegram(message: str, post_id: str | None = None) -> None:
+    """Envia a vaga com dois botões compactos: ❌ e ✅."""
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         raise RuntimeError("TELEGRAM_TOKEN/TELEGRAM_CHAT_ID não configurados.")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "disable_web_page_preview": True,
+    }
+    if post_id:
+        payload["reply_markup"] = json.dumps({
+            "inline_keyboard": [[
+                {"text": "❌", "callback_data": f"discard:{post_id}"},
+                {"text": "✅", "callback_data": f"applied:{post_id}"},
+            ]]
+        }, ensure_ascii=False)
+
     for attempt in range(3):
         try:
-            resp = requests.post(url, data={
-                "chat_id": chat_id,
-                "text": message,
-                "disable_web_page_preview": True,
-            }, timeout=20)
+            resp = requests.post(url, data=payload, timeout=20)
         except requests.RequestException as exc:
             # não repassa a exceção original: a URL contém o token
             raise RuntimeError(f"falha de rede no Telegram ({type(exc).__name__})") from None
@@ -939,6 +949,134 @@ def send_telegram(message: str) -> None:
             raise RuntimeError("Telegram não confirmou o envio.")
         return
     raise RuntimeError("Telegram: limite de envio excedido após 3 tentativas.")
+
+
+
+# ==========================================================================
+# BOTÕES DO TELEGRAM (processados silenciosamente no mesmo arquivo)
+# ==========================================================================
+def _telegram_api(method: str, payload: dict, timeout: int = 20) -> dict | None:
+    """Chama a API sem expor o token em logs ou mensagens de erro."""
+    token = os.environ.get("TELEGRAM_TOKEN", "")
+    if not token:
+        return None
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/{method}",
+            json=payload,
+            timeout=timeout,
+        )
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        log(f"Botões: falha de comunicação ao chamar {method}.")
+        return None
+    if response.status_code != 200 or not data.get("ok"):
+        # Não imprime a resposta completa: ela pode conter dados desnecessários.
+        log(f"Botões: Telegram recusou {method} (HTTP {response.status_code}).")
+        return None
+    return data
+
+
+def _handle_telegram_callback(callback: dict) -> None:
+    """Marca a mensagem original com o emoji escolhido, sem enviar resposta."""
+    callback_id = str(callback.get("id") or "")
+    raw_data = str(callback.get("data") or "")
+    match = re.fullmatch(r"(applied|discard):([A-Za-z0-9_-]{1,32})", raw_data)
+
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    configured_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+    # Responde ao callback sem texto: apenas encerra o indicador de carregamento
+    # do Telegram. Nenhuma notificação, alerta ou nova mensagem é enviada.
+    if callback_id:
+        _telegram_api("answerCallbackQuery", {
+            "callback_query_id": callback_id,
+            "show_alert": False,
+        })
+
+    if not match or str(chat.get("id", "")) != str(configured_chat):
+        return
+
+    emoji = "✅" if match.group(1) == "applied" else "❌"
+    chat_id = chat.get("id")
+    message_id = message.get("message_id")
+    if chat_id is None or message_id is None:
+        return
+
+    original_text = message.get("text") or ""
+    if not re.search(r"\n\n[✅❌]$", original_text):
+        updated_text = f"{original_text.rstrip()}\n\n{emoji}"
+    else:
+        # Evita acrescentar uma segunda marca caso o Telegram reentregue o clique.
+        updated_text = original_text
+
+    result = _telegram_api("editMessageText", {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": updated_text,
+        "disable_web_page_preview": True,
+        "reply_markup": {"inline_keyboard": []},
+    })
+    if result is None:
+        # Mesmo se a edição do texto falhar, tenta retirar os botões.
+        _telegram_api("editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": {"inline_keyboard": []},
+        })
+
+
+def telegram_buttons_listener() -> int:
+    """Escuta cliques continuamente; roda em segundo plano no workflow."""
+    token = os.environ.get("TELEGRAM_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        log("Botões: TELEGRAM_TOKEN/TELEGRAM_CHAT_ID não configurados.")
+        return 2
+
+    api_url = f"https://api.telegram.org/bot{token}/getUpdates"
+    offset: int | None = None
+    log("Botões: listener iniciado (sem respostas ou notificações).")
+
+    while True:
+        params = {
+            "timeout": 25,
+            "allowed_updates": '["callback_query"]',
+        }
+        if offset is not None:
+            params["offset"] = offset
+        try:
+            response = requests.get(api_url, params=params, timeout=35)
+            data = response.json()
+        except (requests.RequestException, ValueError):
+            log("Botões: falha ao consultar cliques; nova tentativa em 5 segundos.")
+            time.sleep(5)
+            continue
+
+        if response.status_code == 409:
+            log("Botões: conflito com outro processo usando getUpdates.")
+            time.sleep(10)
+            continue
+        if response.status_code == 429:
+            retry = (data.get("parameters") or {}).get("retry_after", 5)
+            try:
+                time.sleep(min(int(retry) + 1, 30))
+            except (TypeError, ValueError):
+                time.sleep(6)
+            continue
+        if response.status_code != 200 or not data.get("ok"):
+            log(f"Botões: getUpdates falhou (HTTP {response.status_code}).")
+            time.sleep(5)
+            continue
+
+        for update in data.get("result", []):
+            callback = update.get("callback_query")
+            if callback:
+                _handle_telegram_callback(callback)
+            update_id = update.get("update_id")
+            if isinstance(update_id, int):
+                offset = update_id + 1
 
 
 def build_message(post: Post) -> str:
@@ -1063,7 +1201,7 @@ def main() -> int:
             batch_fingerprints.update(fingerprints)
             continue
         try:
-            send_telegram(message)
+            send_telegram(message, post_id=post.id)
         except Exception as exc:
             log(f"Erro ao enviar para o Telegram: {exc}")
             continue
@@ -1098,4 +1236,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--buttons-listener":
+        sys.exit(telegram_buttons_listener())
     sys.exit(main())
