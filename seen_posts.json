@@ -1,6 +1,13 @@
 {
   "meta": {
-    "last_scan_at": "2026-11-06T14:10:48.052148+00:00",
+    "last_scan_at": "2026-11-06T14:15:51.370626+00:00",
+    "seeded_sources": [
+      "99freelas",
+      "contra",
+      "linkedin",
+      "onlinejobs",
+      "workana"
+    ],
     "sent_fingerprints": {
       "0055ca1ae801d320e55cae5b444082dfa9ee085540d9816270a8dc8f925b8f80": "2026-11-04T16:27:59.284922+00:00",
       "008d231b08c239e52015a686379bbf0693aa14fe3b809f6d050309307e87eef5": "2026-11-06T12:11:44.156702+00:00",
@@ -76,6 +83,7 @@
       "34ca12680bbfcb427409294e770a3febc8ebd58f63c231efb71c9c19fbf77e3b": "2026-11-06T12:11:44.156702+00:00",
       "3503f52e91d1a50c7bfcf8f92e0d7261638f0e2a8ebd332dc6147511b85d7c44": "2026-11-06T12:11:44.156702+00:00",
       "357f9b661c2db7c49514e8cfaa175d1a99c8520f4f3414e1fb7d1550a5b02df6": "2026-11-04T15:37:06.715620+00:00",
+      "3582d99b5cb9cfecb54779d2e2c02d4413aa3ffcf44df9388177af766319e38b": "2026-11-06T14:15:51.370626+00:00",
       "36ff7b4ae2e7b1d81dc23266044ce74235fddfef0242277601a08a13a3f636b2": "2026-11-05T07:22:00.046241+00:00",
       "373c60e73e5a9181444e11f1dfd06296e29f057bb837883b3c5ea18af1823483": "2026-11-05T02:49:20.850158+00:00",
       "374409974e478df5e96fa52d3b14c3aee6aee9fd7255c9c11cf33b0ba1f66814": "2026-11-03T23:36:11.280554+00:00",
@@ -194,6 +202,7 @@
       "8e2e5e2ff7133ded9fa07bb7e18fb8dcadbe33a080fb5b9df7d6fe3625ec89a1": "2026-11-04T22:16:22.442857+00:00",
       "8e8eb70320b8e41ff3bbe381f0e8f13a18955a80af235bc84ad2e13ec04be6c3": "2026-11-05T06:36:34.300431+00:00",
       "90798c3014b1dd1bbe49755600cac2eb523f999d8e31e5a654ac74f33e44b5a7": "2026-11-04T09:46:44.045973+00:00",
+      "90ad3b1dfc0fc75207685ba04c576e8944c21992c97f089ed9c9784e04164778": "2026-11-06T14:15:51.370626+00:00",
       "911ba805afb09203b7abcf91407ca95e104acaf0d091e5ae8d17cae33ede40da": "2026-11-04T23:17:11.463259+00:00",
       "91df7a23f04d710989c9a5cdb2596e586b158ede0cc0658f413e7b69fed4d522": "2026-11-06T12:11:44.156702+00:00",
       "92f0359e8e16f897c6f2a69a083df6bd6693a09ca83f382079afd775a21fbc95": "2026-11-06T12:11:44.156702+00:00",
@@ -321,6 +330,42 @@
       "fe422268e511db7b44121da008182e60c0f30a4a285b1bf1b8b6e15290da7644": "2026-11-04T10:02:34.612263+00:00",
       "ff1db1c20b760ee467bc3990ca3796c2c2c7c73bed64ae9414bc8c9eaa534907": "2026-11-06T12:11:44.156702+00:00",
       "ffe516570b74827299c45e2ec026f973ff39e133e3023177d0b9d822cbac9cec": "2026-11-06T12:11:44.156702+00:00"
+    },
+    "source_health": {
+      "99freelas": {
+        "name": "99Freelas"
+      },
+      "contra": {
+        "name": "Contra"
+      },
+      "linkedin": {
+        "name": "LinkedIn"
+      },
+      "mandy": {
+        "error": "HTTP 403",
+        "failing_since": "2026-11-06T14:15:51.370626+00:00",
+        "name": "Mandy"
+      },
+      "onlinejobs": {
+        "name": "OnlineJobs.ph"
+      },
+      "productionhub": {
+        "error": "HTTP 403",
+        "failing_since": "2026-11-06T14:15:51.370626+00:00",
+        "name": "ProductionHUB"
+      },
+      "workana": {
+        "name": "Workana"
+      }
+    },
+    "source_last_run": {
+      "99freelas": "2026-11-06T14:15:51.370626+00:00",
+      "contra": "2026-11-06T14:15:51.370626+00:00",
+      "linkedin": "2026-11-06T14:15:51.370626+00:00",
+      "mandy": "2026-11-06T14:15:51.370626+00:00",
+      "onlinejobs": "2026-11-06T14:15:51.370626+00:00",
+      "productionhub": "2026-11-06T14:15:51.370626+00:00",
+      "workana": "2026-11-06T14:15:51.370626+00:00"
     },
     "started_at": "2026-11-03T23:10:52.857612+00:00"
   },
@@ -620,6 +665,90 @@
     "1xpagaj": "2026-11-06T12:11:44.156702+00:00",
     "1xpb3o0": "2026-11-06T12:11:44.156702+00:00",
     "1xpc7hx": "2026-11-06T13:05:18.424136+00:00",
-    "1xpcdun": "2026-11-06T13:15:23.826480+00:00"
+    "1xpcdun": "2026-11-06T13:15:23.826480+00:00",
+    "1xpdttq": "2026-11-06T14:15:51.370626+00:00",
+    "1xpduxj": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-atriz-para-gravar-depoimento-ugc-vertical-para-anuncio-796729": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-aula-particular-de-edicao-de-videos-com-ia-chatgpt-e-claude-796587": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-criativa-de-videos-para-reels-e-anuncios-796532": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-pacote-com-12-reels-dinamicos-para-marca-pessoal-institucional-796007": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-video-de-100-dias-no-roblox-796488": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-video-de-beleza-para-o-youtube-796546": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-video-para-canal-no-youtube-sobre-cultura-pop-796605": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-videos-criativos-sobre-b-b-796486": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-videos-curtos-de-conteudo-tecnico-e-de-humor-796493": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-videos-documentais-sobre-serpentes-para-youtube-796072": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-videos-para-canal-de-cultura-nerd-796022": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-videos-para-instagram-reels-796203": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-videos-para-reels-e-redes-sociais-796680": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-edicao-de-videos-para-youtube-reels-e-tiktok-796679": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-locucao-diaria-para-canal-de-oracoes-noturnas-no-youtube-796750": "2026-11-06T14:15:51.370626+00:00",
+    "99freelas-social-media-para-marca-de-educacao-steam-instagram-linkedin-remoto-796051": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4459096199": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4471407256": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4473693737": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4485853123": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4485865193": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486232340": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486238696": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486243400": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486767804": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486936432": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486942328": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486962292": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486969293": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486973909": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486977204": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4486992155": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4487768984": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4488002920": "2026-11-06T14:15:51.370626+00:00",
+    "linkedin-4488067247": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-ai-cinematic-drama-movie-ads-video-editor-for-ecom-brand-1761870": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-ai-video-editor-1734073": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-ai-video-editor-direct-response-ads-1755484": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-ai-video-editor-full-time-1762393": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-alex-eala-fan-page-capcut-video-editor-youtube-full-time-remote-1762408": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-capcut-video-editor-youtube-shorts-localization-dubbing-3-usd-video-1762465": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-dream-social-media-queen-1762343": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-ecom-ai-video-editor-1762390": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-editing-ai-videos-typograpy-editor-1762368": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-experienced-short-form-video-editor-1762317": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-full-time-executive-virtual-assistant-operations-digital-marketing-1762428": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-full-time-youtube-video-editor-remote-1762370": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-graphic-desginer-1762275": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-hiring-a-claude-code-proficient-ai-video-editor-long-form-short-form-1759010": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-hiring-experienced-youtube-bodycam-video-editor-long-form-crime-police-footage-1761681": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-hr-marketing-virtual-assistant-remote-contractor-1762301": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-kpop-funny-moments-video-editor-full-time-remote-1761151": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-real-estate-video-editor-1762288": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-sales-and-marketing-associate-remote-full-time-1762342": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-senior-meta-ads-manager-creative-5-yrs-founding-ads-dept-hire-fb-ads-video-ghl-1761868": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-senior-performance-video-editor-meta-tiktok-ads-1745335": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-short-form-video-editor-read-description-1716779": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-social-media-advertising-assistant-clothing-brand-1707708": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-social-media-advertising-assistant-clothing-brand-1762455": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-social-media-manager-1758712": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-social-media-you-tube-video-editor-1761101": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-tik-tok-video-editor-1759530": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-tik-tok-video-editor-1761347": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-tiktok-product-video-editor-faceless-content-3-hour-1762136": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-ugc-actor-ugc-creator-1758010": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-ugc-video-editor-1762413": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-va-video-editor-1762319": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-1729069": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-1757841": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-1762347": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-1762348": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-1762366": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-1762389": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-ai-first-ad-editing-ecommerce-remote-1715918": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-for-b2c-info-business-youtube-ads-vsls-1728090": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-for-talking-head-reels-teaching-claude-and-ai-with-visual-explainers-and-memes-1759030": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-realistic-ai-drama-and-animated-music-ads-for-a-fast-growing-us-supplement-brand-1762357": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-video-editor-social-media-reels-paid-ads-1762330": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-youtube-thumbnail-graphic-designer-for-b2c-info-business-channels-1728091": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-youtube-video-editor-faceless-channel-weekly-videos-1762219": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-youtube-video-editor-faceless-channel-weekly-videos-1762436": "2026-11-06T14:15:51.370626+00:00",
+    "onlinejobs-youtube-vlogs-video-editor-1728119": "2026-11-06T14:15:51.370626+00:00"
   }
 }
