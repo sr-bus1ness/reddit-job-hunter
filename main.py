@@ -4,7 +4,7 @@ Sr.Business Job-Bot
 Monitora subreddits e outras plataformas em busca de vagas de edição de vídeo
 e envia ao Telegram.
 
-Plataformas: Reddit, LinkedIn, OnlineJobs.ph, Workana, 99Freelas, ProductionHUB,
+Plataformas: Reddit, LinkedIn, InfoJobs, Workana, 99Freelas, ProductionHUB,
 Mandy, Contra e QUALQUER feed RSS/Atom (Upwork, X/Twitter etc. via EXTRA_RSS_FEEDS).
 
 Fontes de dados (modo REDDIT_SOURCE=auto, o padrão):
@@ -91,7 +91,7 @@ JOB_BOARD_SUBS = {
     "videoeditingrequests",
     # Plataformas de vagas: todo anúncio já é uma contratação.
     "linkedin",
-    "onlinejobs",
+    "infojobs",
     "workana",
     "99freelas",
     "productionhub",
@@ -935,10 +935,6 @@ class Board:
 
 # Se um site mudar de endereço, é aqui que se corrige (URL de busca e/ou link_re).
 BOARDS = [
-    Board("onlinejobs", "OnlineJobs.ph",
-          ("https://www.onlinejobs.ph/jobseekers/jobsearch?jobkeyword=video+editor",
-           "https://www.onlinejobs.ph/jobseekers/jobsearch?jobkeyword=video+editing"),
-          r"/jobseekers/job/(?P<id>[A-Za-z0-9%_.-]+)"),
     Board("workana", "Workana",
           ("https://www.workana.com/en/jobs?query=video+editor&publication=1d",
            "https://www.workana.com/pt/jobs?query=edi%C3%A7%C3%A3o+de+v%C3%ADdeo&publication=1d"),
@@ -947,6 +943,10 @@ BOARDS = [
           ("https://www.99freelas.com.br/projects?q=edi%C3%A7%C3%A3o+de+v%C3%ADdeo",
            "https://www.99freelas.com.br/projects?q=editor+de+video"),
           r"/project/(?P<id>[A-Za-z0-9_-]*\d)"),
+    Board("infojobs", "InfoJobs",
+          ("https://www.infojobs.com.br/vagas-de-emprego-editor-de-video.aspx",
+           "https://www.infojobs.com.br/empregos.aspx?palavrachave=edicao+de+video"),
+          r"/vaga-de-(?P<id>[A-Za-z0-9_%.-]+?)\.aspx", experimental=True),
     Board("productionhub", "ProductionHUB",
           ("https://www.productionhub.com/jobs?keywords=video+editor",),
           r"/jobs?/(?P<id>[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)", experimental=True),
