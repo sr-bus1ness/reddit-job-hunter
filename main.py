@@ -1,7 +1,11 @@
 """
 BOT JOB VIDEO EDITOR
 ====================
-Monitora subreddits em busca de vagas de edição de vídeo e envia ao Telegram.
+Monitora subreddits e outras plataformas em busca de vagas de edição de vídeo
+e envia ao Telegram.
+
+Plataformas: Reddit, LinkedIn, OnlineJobs.ph, Workana, 99Freelas, ProductionHUB,
+Mandy, Contra e QUALQUER feed RSS/Atom (Upwork, X/Twitter etc. via EXTRA_RSS_FEEDS).
 
 Fontes de dados (modo REDDIT_SOURCE=auto, o padrão):
   1. RSS do Reddit  -> UMA requisição com todos os subreddits juntos (r/a+b+c).
@@ -15,14 +19,22 @@ Variáveis de ambiente:
   DRY_RUN=1       não envia nada ao Telegram e não grava o histórico
   DEBUG=1         mostra por que cada post foi aceito/rejeitado
   REDDIT_USER_AGENT   opcional, ex.: "github-actions:video-job-bot:v2 (by /u/seu_usuario)"
+  EXTRA_RSS_FEEDS     opcional, uma linha por feed no formato  Nome|https://url-do-feed
+  DISABLE_SOURCES     opcional, chaves separadas por vírgula (ex.: "contra,mandy")
+  REACTION_APPLIED / REACTION_DISCARD   emojis de reação (padrão 👍 / 👎)
+  HIDE_BUTTONS_AFTER_CLICK=1   remove os botões depois do clique (padrão: mantém)
+
+Teste das fontes novas (nada é enviado):  python main.py --test-sources
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import os
 import re
 import sys
+import threading
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -30,7 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import requests
@@ -65,6 +77,10 @@ STRICT_SUBS = {
     "videoeditors_forhire",
     "youtubeeditorforhire",
     "youtubeeditorsforhire",
+    # X/Twitter: a maioria dos tweets é de editores se oferecendo.
+    "x",
+    "twitter",
+    "xtwitter",
 }
 
 # Subreddits dedicados a vagas/pedidos: contratação é implícita.
@@ -73,6 +89,16 @@ JOB_BOARD_SUBS = {
     "hireaneditor",
     "videoeditingjobs",
     "videoeditingrequests",
+    # Plataformas de vagas: todo anúncio já é uma contratação.
+    "linkedin",
+    "onlinejobs",
+    "workana",
+    "99freelas",
+    "productionhub",
+    "mandy",
+    "contra",
+    "upwork",
+    "fiverr",
 }
 
 SEEN_FILE = os.environ.get("SEEN_FILE", "seen_posts.json")
@@ -84,7 +110,7 @@ DEBUG = os.environ.get("DEBUG") == "1"
 # Nas execuções seguintes, só buscamos posts desde a última varredura, com pequena
 # sobreposição para não perder posts que apareçam atrasados no feed.
 SCAN_OVERLAP = timedelta(minutes=10)
-SEEN_RETENTION = timedelta(days=7)      # histórico de IDs e duplicatas já enviados
+SEEN_RETENTION = timedelta(days=30)     # histórico de IDs e duplicatas já enviados
 CLOCK_SKEW = timedelta(minutes=10)      # tolerância para relógios dessincronizados
 ALERT_AFTER = timedelta(hours=3)        # avisa no Telegram se tudo falhar por este tempo
 ALERT_EVERY = timedelta(hours=12)       # intervalo mínimo entre avisos
@@ -138,6 +164,10 @@ class Post:
     created: datetime
     source: str = "rss"
     removed: bool = False
+    platform: str = "Reddit"      # nome exibido no Telegram
+    company: str = ""
+    location: str = ""
+    dated: bool = True            # False = a plataforma não informa data/hora confiável
 
 
 @dataclass
@@ -315,8 +345,9 @@ VIDEO_ROLE_RES = [
     re.compile(r"\bpost[- ]?production\b"),
     re.compile(r"\bcolou?rists?\b"),
     re.compile(r"\bclippers?\b"),
-    re.compile(r"\b(?:editor(?:es|a|as)? de video|edicao de video|edicion de video|"
-               r"editores de video|videomaker|videografo)\b"),
+    re.compile(r"\b(?:editor(?:es|a|as)? de (?:\w+ )?(?:videos?|reels?|shorts?|youtube)|"
+               r"(?:edicao|edicion|montagem|montaje|montador(?:es|a|as)?) de (?:\w+ )?(?:videos?|reels?|shorts?)|"
+               r"videomaker|videografo|editar videos?)\b"),
 ]
 _BARE_EDITOR_RE = re.compile(r"\b(?:(\w+) )?editors?\b(?! ?-? ?in[- ]chief)")
 _NON_VIDEO_EDITOR_PREFIX = {
@@ -469,7 +500,7 @@ def get_niche(title: str, body: str = "") -> str:
 _LANGUAGE_PATTERNS = {
     "Inglês": re.compile(r"\b(?:i|the|and|for|you|your|we|our|with|looking|need|hiring|paid|budget|send|please|including|this|that)\b"),
     "Espanhol": re.compile(r"\b(?:el|los|las|del|que|para|con|busco|buscamos|necesito|necesitamos|trabajo|contratando|presupuesto|envia|envíame)\b"),
-    "Português": re.compile(r"\b(?:os|das|dos|que|para|com|uma|estou|preciso|precisamos|procuro|procuramos|trabalho|contratando|orcamento|envie|video|voce|seu)\b"),
+    "Português": re.compile(r"\b(?:os|das|dos|que|para|com|uma|estou|preciso|precisamos|procuro|procuramos|trabalho|contratando|orcamento|envie|voce|seu)\b"),
     "Francês": re.compile(r"\b(?:le|les|des|que|pour|avec|recherche|besoin|nous|vous|monteur|montage|bonjour|merci)\b"),
 }
 
@@ -666,7 +697,8 @@ def _reset_seconds(resp: requests.Response):
     return None
 
 
-def http_get(url: str, *, params: dict | None = None, retries: int = 2) -> requests.Response:
+def http_get(url: str, *, params: dict | None = None, headers: dict | None = None,
+             retries: int = 2) -> requests.Response:
     """GET com respeito a rate limit (429/Retry-After/X-RateLimit-*) e orçamento de tempo."""
     host = urlparse(url).netloc
     last: FetchError | None = None
@@ -679,7 +711,7 @@ def http_get(url: str, *, params: dict | None = None, retries: int = 2) -> reque
         if time_left() <= 0:
             raise FetchError("orçamento de tempo da execução esgotado")
         try:
-            resp = _SESSION.get(url, params=params, timeout=(10, 30))
+            resp = _SESSION.get(url, params=params, headers=headers, timeout=(10, 30))
         except requests.RequestException as exc:
             last = FetchError(f"erro de rede ({type(exc).__name__})")
             time.sleep(min(2 ** attempt, 5))
@@ -873,6 +905,361 @@ def collect_posts(now: datetime, since: datetime, mode: str = SOURCE_MODE):
 
 
 # ============================================================================
+# OUTRAS PLATAFORMAS
+# ============================================================================
+# Cada fonte devolve uma lista de Post; o resto do fluxo (filtro, deduplicação,
+# Telegram) é o mesmo do Reddit. Sites sem data confiável usam dated=False: na
+# PRIMEIRA varredura de cada fonte as vagas que já estão no ar são só registradas
+# (não enviadas), para você não receber centenas de mensagens de uma vez.
+BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+}
+DISABLED_SOURCES = {s.strip().lower() for s in os.environ.get("DISABLE_SOURCES", "").split(",") if s.strip()}
+SOURCE_ALERT_AFTER = timedelta(hours=6)   # avisa se uma fonte ficar fora do ar por este tempo
+SOURCE_ALERT_EVERY = timedelta(hours=24)  # no máximo um aviso de fontes por dia
+
+
+@dataclass(frozen=True)
+class Board:
+    """Site de vagas lido pelos links da página de busca (sem depender de CSS)."""
+    key: str                 # identificador interno (também usado pelo filtro)
+    name: str                # nome mostrado no Telegram
+    urls: tuple              # páginas de busca consultadas a cada varredura
+    link_re: str             # regex do link de uma vaga; o grupo "id" é o identificador
+    every: int = 15          # minutos entre varreduras desta fonte
+    experimental: bool = False
+
+
+# Se um site mudar de endereço, é aqui que se corrige (URL de busca e/ou link_re).
+BOARDS = [
+    Board("onlinejobs", "OnlineJobs.ph",
+          ("https://www.onlinejobs.ph/jobseekers/jobsearch?jobkeyword=video+editor",
+           "https://www.onlinejobs.ph/jobseekers/jobsearch?jobkeyword=video+editing"),
+          r"/jobseekers/job/(?P<id>[A-Za-z0-9%_.-]+)"),
+    Board("workana", "Workana",
+          ("https://www.workana.com/en/jobs?query=video+editor&publication=1d",
+           "https://www.workana.com/pt/jobs?query=edi%C3%A7%C3%A3o+de+v%C3%ADdeo&publication=1d"),
+          r"/job/(?P<id>[A-Za-z0-9_-]+)"),
+    Board("99freelas", "99Freelas",
+          ("https://www.99freelas.com.br/projects?q=edi%C3%A7%C3%A3o+de+v%C3%ADdeo",
+           "https://www.99freelas.com.br/projects?q=editor+de+video"),
+          r"/project/(?P<id>[A-Za-z0-9_-]*\d)"),
+    Board("productionhub", "ProductionHUB",
+          ("https://www.productionhub.com/jobs?keywords=video+editor",),
+          r"/jobs?/(?P<id>[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)", experimental=True),
+    Board("mandy", "Mandy",
+          ("https://www.mandy.com/jobs?keywords=video+editor",),
+          r"/jobs?/(?P<id>[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)", experimental=True),
+    Board("contra", "Contra",
+          ("https://contra.com/opportunities",),
+          r"/opportunity/(?P<id>[A-Za-z0-9_-]+)", experimental=True),
+]
+
+_GENERIC_LINK_TEXT = {"apply", "apply now", "view job", "view details", "see more", "read more",
+                      "ver mais", "ver detalhes", "saiba mais", "candidatar-se", "more details"}
+
+
+class _AnchorParser(HTMLParser):
+    """Coleta (href, texto) de todos os links da página."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.anchors: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._buf: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self._skip += 1
+        elif tag == "a":
+            self._flush()
+            self._href = dict(attrs).get("href") or ""
+            self._buf = []
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self._skip:
+            self._skip -= 1
+        elif tag == "a":
+            self._flush()
+
+    def handle_data(self, data):
+        if self._href is not None and not self._skip:
+            self._buf.append(data)
+
+    def _flush(self):
+        if self._href is not None:
+            self.anchors.append((self._href, re.sub(r"\s+", " ", " ".join(self._buf)).strip()))
+        self._href, self._buf = None, []
+
+    def close(self):
+        super().close()
+        self._flush()
+
+
+def extract_board_links(page: str, base_url: str, link_re: str) -> list[tuple[str, str, str]]:
+    """Devolve [(id, título, url)] para os links que casam com link_re."""
+    parser = _AnchorParser()
+    parser.feed(page or "")
+    parser.close()
+    rx = re.compile(link_re)
+    best: dict[str, tuple[str, str]] = {}
+    for href, text in parser.anchors:
+        if not href or href.startswith(("javascript:", "mailto:", "#")):
+            continue
+        full = urljoin(base_url, html.unescape(href)).split("#")[0]
+        m = rx.search(full)
+        if not m:
+            continue
+        text = text[:200]
+        if len(text) < 8 or fold(text) in _GENERIC_LINK_TEXT:
+            continue
+        pid = m.group("id")
+        # vários links levam à mesma vaga (imagem, título, "ver mais"): fica o texto mais curto
+        if pid not in best or len(text) < len(best[pid][0]):
+            best[pid] = (text, full)
+    return [(pid, title, url) for pid, (title, url) in best.items()]
+
+
+def fetch_board(board: Board) -> list[Post]:
+    now = utc_now()
+    found: dict[str, tuple[str, str]] = {}
+    errors: list[str] = []
+    answered = 0
+    for url in board.urls:
+        try:
+            resp = http_get(url, headers=BROWSER_HEADERS)
+        except FetchError as exc:
+            errors.append(str(exc))
+            continue
+        answered += 1
+        for pid, title, link in extract_board_links(resp.text, url, board.link_re):
+            found.setdefault(pid, (title, link))
+        time.sleep(1)
+    if not answered:
+        raise FetchError("; ".join(dict.fromkeys(errors)) or "sem resposta")
+    return [
+        Post(id=f"{board.key}-{pid}", title=title, text="", url=link, subreddit=board.key,
+             created=now, source="html", platform=board.name, dated=False)
+        for pid, (title, link) in found.items()
+    ]
+
+
+# --- LinkedIn (endpoint público de vagas, sem login) ---------------------------
+LINKEDIN_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+LINKEDIN_QUERIES = ("video editor", "editor de vídeo", "short form video editor")
+
+
+def parse_linkedin(markup: str) -> list[Post]:
+    now = utc_now()
+    posts: list[Post] = []
+    for card in re.findall(r"<li\b.*?</li>", markup or "", re.S):
+        href = re.search(r'href="([^"]*?/jobs/view/[^"]*)"', card)
+        if not href:
+            continue
+        m = re.search(r"/jobs/view/(?:[^/?\"]*?-)?(\d{6,})", html.unescape(href.group(1)))
+        title = re.search(r"<h3[^>]*>(.*?)</h3>", card, re.S)
+        if not m or not title:
+            continue
+        company = re.search(r"<h4[^>]*>(.*?)</h4>", card, re.S)
+        place = re.search(r"job-search-card__location[^>]*>(.*?)</span>", card, re.S)
+        posts.append(Post(
+            id=f"linkedin-{m.group(1)}",
+            title=clean_html(title.group(1)),
+            text="",
+            url=f"https://www.linkedin.com/jobs/view/{m.group(1)}",
+            subreddit="linkedin",
+            created=now,
+            source="html",
+            platform="LinkedIn",
+            company=clean_html(company.group(1)) if company else "",
+            location=clean_html(place.group(1)) if place else "",
+            dated=False,    # o LinkedIn só informa a data (sem hora)
+        ))
+    return posts
+
+
+def fetch_linkedin() -> list[Post]:
+    found: dict[str, Post] = {}
+    errors: list[str] = []
+    answered = 0
+    for keywords in LINKEDIN_QUERIES:
+        try:
+            resp = http_get(LINKEDIN_URL, headers=BROWSER_HEADERS, params={
+                "keywords": keywords, "location": "Worldwide",
+                "f_TPR": "r86400", "sortBy": "DD", "start": 0,
+            })
+        except FetchError as exc:
+            errors.append(str(exc))
+            continue
+        answered += 1
+        for post in parse_linkedin(resp.text):
+            found.setdefault(post.id, post)
+        time.sleep(2)
+    if not answered:
+        raise FetchError("; ".join(dict.fromkeys(errors)) or "sem resposta")
+    return list(found.values())
+
+
+# --- Feeds RSS/Atom genéricos (Upwork, X/Twitter e qualquer outro) ---------------
+def extra_feeds() -> list[tuple[str, str, str]]:
+    """Lê EXTRA_RSS_FEEDS: uma linha por feed, no formato  Nome|https://url"""
+    feeds = []
+    for line in os.environ.get("EXTRA_RSS_FEEDS", "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        label, _, url = line.partition("|")
+        label, url = label.strip(), url.strip()
+        if not label or not url.startswith(("http://", "https://")):
+            log(f"EXTRA_RSS_FEEDS: linha ignorada (use Nome|https://url): {label[:30]!r}")
+            continue
+        feeds.append((re.sub(r"[^a-z0-9]+", "", fold(label)) or "feed", label, url))
+    return feeds
+
+
+def _ft(entry, name: str) -> str:
+    return (entry.findtext(name, "") or entry.findtext(f"a:{name}", "", _ATOM) or "").strip()
+
+
+def parse_generic_feed(content: bytes, key: str, label: str) -> list[Post]:
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise FetchError(f"resposta não é XML válido ({exc})", 200)
+    now = utc_now()
+    posts: list[Post] = []
+    for entry in (root.findall(".//item") or root.findall(".//a:entry", _ATOM)):
+        link = _ft(entry, "link")
+        if not link:
+            atom_link = entry.find("a:link", _ATOM)
+            link = atom_link.attrib.get("href", "") if atom_link is not None else ""
+        title = html.unescape(_ft(entry, "title"))
+        if not link or not title:
+            continue
+        guid = _ft(entry, "guid") or _ft(entry, "id") or link
+        raw_date = (_ft(entry, "pubDate") or _ft(entry, "published") or _ft(entry, "updated")
+                    or _ft(entry, "{http://purl.org/dc/elements/1.1/}date"))
+        created = parse_date(raw_date)
+        body = (_ft(entry, "description") or _ft(entry, "content") or _ft(entry, "summary")
+                or _ft(entry, "{http://purl.org/rss/1.0/modules/content/}encoded"))
+        posts.append(Post(
+            id=f"{key}-{hashlib.sha1(guid.encode('utf-8')).hexdigest()[:16]}",
+            title=title,
+            text=clean_html(body),
+            url=link,
+            subreddit=key,
+            created=created or now,
+            source="feed",
+            platform=label,
+            dated=created is not None,
+        ))
+    return posts
+
+
+def fetch_feed(key: str, label: str, url: str) -> list[Post]:
+    return parse_generic_feed(http_get(url, headers=BROWSER_HEADERS).content, key, label)
+
+
+# --- orquestração -----------------------------------------------------------------
+def build_fetchers() -> list[tuple[str, str, int, object]]:
+    """[(chave, nome, minutos entre varreduras, função)] de todas as fontes extras."""
+    fetchers = [("linkedin", "LinkedIn", 20, fetch_linkedin)]
+    for board in BOARDS:
+        fetchers.append((board.key, board.name, board.every, lambda b=board: fetch_board(b)))
+    for key, label, url in extra_feeds():
+        fetchers.append((key, label, 10, lambda k=key, l=label, u=url: fetch_feed(k, l, u)))
+    return [f for f in fetchers if f[0] not in DISABLED_SOURCES]
+
+
+def collect_extra(now: datetime, meta: dict, force: bool = False):
+    """Roda as fontes extras que já estão no horário. Devolve (posts, resultados)."""
+    posts: dict[str, Post] = {}
+    results: dict[str, tuple[str, bool, str]] = {}
+    last_runs = meta.setdefault("source_last_run", {})
+    for key, name, every, fetch in build_fetchers():
+        last = parse_date(last_runs.get(key))
+        if not force and last and now - last < timedelta(minutes=every):
+            continue
+        if time_left() <= 20:
+            log("Orçamento de tempo quase esgotado; fontes restantes ficam para o próximo ciclo.")
+            break
+        last_runs[key] = now.isoformat()      # conta a tentativa, para não insistir em fonte bloqueada
+        try:
+            batch = fetch()
+        except FetchError as exc:
+            results[key] = (name, False, str(exc))
+            log(f"{name}: falhou ({exc})")
+            continue
+        except Exception as exc:              # HTML inesperado não pode derrubar o ciclo todo
+            results[key] = (name, False, f"erro inesperado ({type(exc).__name__})")
+            log(f"{name}: erro inesperado ({type(exc).__name__}: {exc})")
+            continue
+        results[key] = (name, True, "")
+        for post in batch:
+            posts.setdefault(post.id, post)
+        log(f"{name}: {len(batch)} vagas listadas.")
+    return posts, results
+
+
+def update_source_health(meta: dict, results: dict, now: datetime) -> None:
+    """Fontes extras são frágeis: avisa no Telegram (1x/dia) se alguma ficar fora do ar."""
+    health = meta.setdefault("source_health", {})
+    known = {f[0] for f in build_fetchers()}
+    for key in [k for k in health if k not in known]:
+        health.pop(key)
+    for key, (name, ok, error) in results.items():
+        entry = health.setdefault(key, {})
+        entry["name"] = name
+        if ok:
+            entry.pop("failing_since", None)
+            entry.pop("error", None)
+        else:
+            entry.setdefault("failing_since", now.isoformat())
+            entry["error"] = error[:80]
+    down = []
+    for entry in health.values():
+        since = parse_date(entry.get("failing_since"))
+        if since and now - since >= SOURCE_ALERT_AFTER:
+            down.append(f"• {entry.get('name', '?')}: {entry.get('error', 'sem resposta')}")
+    last_alert = parse_date(meta.get("last_sources_alert"))
+    if down and not DRY_RUN and (not last_alert or now - last_alert >= SOURCE_ALERT_EVERY):
+        try:
+            send_telegram("⚠️ BOT JOB VIDEO EDITOR: fontes sem resposta há mais de "
+                          f"{int(SOURCE_ALERT_AFTER.total_seconds() // 3600)}h:\n" + "\n".join(down))
+            meta["last_sources_alert"] = now.isoformat()
+        except Exception as exc:
+            log(f"Não consegui enviar o aviso de fontes: {exc}")
+
+
+def test_sources() -> int:
+    """python main.py --test-sources : mostra o que cada fonte extra consegue ler agora."""
+    log("Teste das fontes extras (nada é enviado ao Telegram, nada é gravado).")
+    experimental = {b.key for b in BOARDS if b.experimental}
+    for key, name, _every, fetch in build_fetchers():
+        tag = " (experimental)" if key in experimental else ""
+        try:
+            batch = fetch()
+        except FetchError as exc:
+            log(f"[FALHOU] {name}{tag}: {exc}")
+            continue
+        except Exception as exc:
+            log(f"[ERRO]   {name}{tag}: {type(exc).__name__}: {exc}")
+            continue
+        passing = sum(classify(p).accepted for p in batch)
+        log(f"[OK]     {name}{tag}: {len(batch)} itens lidos, {passing} passariam no filtro.")
+        for post in batch[:3]:
+            log(f"           - {post.title[:80]!r} -> {classify(post).reason}")
+        if not batch:
+            log("           (nenhum link reconhecido: o site pode ter bloqueado o IP ou mudado de layout)")
+        time.sleep(1)
+    return 0
+
+
+# ============================================================================
 # HISTÓRICO E ESTADO
 # ============================================================================
 def load_state() -> tuple[dict, dict]:
@@ -911,7 +1298,7 @@ def prune_seen(seen: dict, now: datetime) -> dict:
 # TELEGRAM
 # ============================================================================
 def send_telegram(message: str, post_id: str | None = None) -> None:
-    """Envia a vaga com dois botões compactos: ❌ e ✅."""
+    """Envia a vaga com dois botões compactos: ❌ e ✅ (viram uma reação ao serem tocados)."""
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -925,8 +1312,8 @@ def send_telegram(message: str, post_id: str | None = None) -> None:
     if post_id:
         payload["reply_markup"] = json.dumps({
             "inline_keyboard": [[
-                {"text": "❌", "callback_data": f"discard:{post_id}"},
-                {"text": "✅", "callback_data": f"applied:{post_id}"},
+                {"text": "❌", "callback_data": "discard"},
+                {"text": "✅", "callback_data": "applied"},
             ]]
         }, ensure_ascii=False)
 
@@ -953,15 +1340,26 @@ def send_telegram(message: str, post_id: str | None = None) -> None:
 
 
 # ==========================================================================
-# BOTÕES DO TELEGRAM (processados silenciosamente no mesmo arquivo)
+# BOTÕES DO TELEGRAM -> REAÇÃO NA PRÓPRIA MENSAGEM
 # ==========================================================================
+# O Telegram só aceita um conjunto fixo de emojis como reação (✅ e ❌ NÃO estão nele).
+# Por isso: ✅ vira 👍 e ❌ vira 👎. Dá para trocar por qualquer emoji permitido
+# (👍 👎 🔥 🏆 💯 👌 🤝 🙈 😴 ...) pelas variáveis REACTION_APPLIED / REACTION_DISCARD.
+REACTION_APPLIED = os.environ.get("REACTION_APPLIED", "👍")
+REACTION_DISCARD = os.environ.get("REACTION_DISCARD", "👎")
+HIDE_BUTTONS_AFTER_CLICK = os.environ.get("HIDE_BUTTONS_AFTER_CLICK") == "1"
+
+# Sessão persistente: reaproveita a conexão HTTPS e evita o handshake a cada clique.
+_TG_SESSION = requests.Session()
+
+
 def _telegram_api(method: str, payload: dict, timeout: int = 20) -> dict | None:
     """Chama a API sem expor o token em logs ou mensagens de erro."""
     token = os.environ.get("TELEGRAM_TOKEN", "")
     if not token:
         return None
     try:
-        response = requests.post(
+        response = _TG_SESSION.post(
             f"https://api.telegram.org/bot{token}/{method}",
             json=payload,
             timeout=timeout,
@@ -978,53 +1376,43 @@ def _telegram_api(method: str, payload: dict, timeout: int = 20) -> dict | None:
 
 
 def _handle_telegram_callback(callback: dict) -> None:
-    """Marca a mensagem original com o emoji escolhido, sem enviar resposta."""
+    """Reage à mensagem original com o emoji escolhido. Não edita texto nem envia nada."""
     callback_id = str(callback.get("id") or "")
-    raw_data = str(callback.get("data") or "")
-    match = re.fullmatch(r"(applied|discard):([A-Za-z0-9_-]{1,32})", raw_data)
+    # Aceita também o formato antigo ("applied:<id>") de mensagens já enviadas.
+    match = re.fullmatch(r"(applied|discard)(?::[A-Za-z0-9_-]{1,64})?", str(callback.get("data") or ""))
 
     message = callback.get("message") or {}
     chat = message.get("chat") or {}
-    configured_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-    # Responde ao callback sem texto: apenas encerra o indicador de carregamento
-    # do Telegram. Nenhuma notificação, alerta ou nova mensagem é enviada.
-    if callback_id:
-        _telegram_api("answerCallbackQuery", {
-            "callback_query_id": callback_id,
-            "show_alert": False,
-        })
-
-    if not match or str(chat.get("id", "")) != str(configured_chat):
-        return
-
-    emoji = "✅" if match.group(1) == "applied" else "❌"
     chat_id = chat.get("id")
     message_id = message.get("message_id")
-    if chat_id is None or message_id is None:
-        return
 
-    original_text = message.get("text") or ""
-    if not re.search(r"\n\n[✅❌]$", original_text):
-        updated_text = f"{original_text.rstrip()}\n\n{emoji}"
-    else:
-        # Evita acrescentar uma segunda marca caso o Telegram reentregue o clique.
-        updated_text = original_text
+    # Encerra o "carregando" do botão em paralelo, sem texto, alerta ou notificação.
+    answer = None
+    if callback_id:
+        answer = threading.Thread(
+            target=_telegram_api,
+            args=("answerCallbackQuery", {"callback_query_id": callback_id, "show_alert": False}),
+            daemon=True,
+        )
+        answer.start()
 
-    result = _telegram_api("editMessageText", {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": updated_text,
-        "disable_web_page_preview": True,
-        "reply_markup": {"inline_keyboard": []},
-    })
-    if result is None:
-        # Mesmo se a edição do texto falhar, tenta retirar os botões.
-        _telegram_api("editMessageReplyMarkup", {
+    if match and chat_id is not None and message_id is not None \
+            and str(chat_id) == str(os.environ.get("TELEGRAM_CHAT_ID", "")):
+        emoji = REACTION_APPLIED if match.group(1) == "applied" else REACTION_DISCARD
+        _telegram_api("setMessageReaction", {
             "chat_id": chat_id,
             "message_id": message_id,
-            "reply_markup": {"inline_keyboard": []},
+            "reaction": [{"type": "emoji", "emoji": emoji}],
         })
+        if HIDE_BUTTONS_AFTER_CLICK:
+            _telegram_api("editMessageReplyMarkup", {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": {"inline_keyboard": []},
+            })
+
+    if answer:
+        answer.join(timeout=5)
 
 
 def telegram_buttons_listener() -> int:
@@ -1047,7 +1435,7 @@ def telegram_buttons_listener() -> int:
         if offset is not None:
             params["offset"] = offset
         try:
-            response = requests.get(api_url, params=params, timeout=35)
+            response = _TG_SESSION.get(api_url, params=params, timeout=35)
             data = response.json()
         except (requests.RequestException, ValueError):
             log("Botões: falha ao consultar cliques; nova tentativa em 5 segundos.")
@@ -1085,9 +1473,17 @@ def build_message(post: Post) -> str:
         title = title[:247] + "..."
     full_text = f"{post.title} {post.text}"
     local_date = post.created.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
+    origin = f"Reddit · r/{post.subreddit}" if post.platform == "Reddit" else post.platform
+    extra = ""
+    if post.company:
+        extra += f"🏢 {post.company}\n"
+    if post.location:
+        extra += f"📍 {post.location}\n"
     return (
         "🤖 BOT JOB VIDEO EDITOR\n\n"
+        f"📡 {origin}\n"
         f"📌 {title}\n"
+        f"{extra}"
         f"💰 {get_value(full_text)}\n"
         f"🎬 {get_niche(post.title, post.text)}\n"
         f"🌐 {get_language(post.title, post.text)}\n"
@@ -1107,7 +1503,9 @@ def post_fingerprints(post: Post) -> set[str]:
     def digest(value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    fingerprints = {digest(f"title+body:{title}|{body}")}
+    # Listagens sem descrição: títulos iguais ("Video Editor") de vagas diferentes não são duplicata.
+    url_key = f"|{post.url}" if len(body) < 40 else ""
+    fingerprints = {digest(f"title+body:{title}|{body}{url_key}")}
     # Crossposts às vezes recebem títulos diferentes, mas mantêm a descrição inteira.
     # A chave extra só é usada quando há uma descrição longa e relativamente específica.
     if len(body) >= 180 and len(body.split()) >= 30:
@@ -1176,6 +1574,16 @@ def main() -> int:
     posts, ok, errors = collect_posts(now, scan_since)
     update_health(meta, ok, errors, now)
 
+    # Outras plataformas (cada uma respeita o seu próprio intervalo entre varreduras).
+    extra_posts, extra_results = collect_extra(now, meta)
+    update_source_health(meta, extra_results, now)
+    for pid, post in extra_posts.items():
+        posts.setdefault(pid, post)
+        if not post.dated and pid in seen:
+            seen[pid] = now.isoformat()       # ainda no ar: mantém no histórico
+    seeded = set(meta.get("seeded_sources") or [])
+    seeded_now: dict[str, int] = {}
+
     fresh = [
         p for p in posts.values()
         if scan_since <= p.created <= now + CLOCK_SKEW and p.id not in seen
@@ -1186,14 +1594,19 @@ def main() -> int:
     sent_fingerprints = meta.setdefault("sent_fingerprints", {})
     batch_fingerprints: set[str] = set()
     for post in fresh:
+        # Primeira varredura de uma fonte sem data: só registra o que já estava no ar.
+        if not post.dated and post.subreddit not in seeded and not DRY_RUN:
+            seen[post.id] = now.isoformat()
+            seeded_now[post.subreddit] = seeded_now.get(post.subreddit, 0) + 1
+            continue
         fingerprints = post_fingerprints(post)
         if fingerprints & (set(sent_fingerprints) | batch_fingerprints):
-            debug(f"[duplicada] r/{post.subreddit}: {post.title[:80]!r} -> vaga já enviada em outro post/subreddit")
+            debug(f"[duplicada] {post.platform}/{post.subreddit}: {post.title[:80]!r} -> vaga já enviada em outro post/subreddit")
             continue
 
         decision = classify(post)
         if not decision.accepted:
-            debug(f"[rejeitada] r/{post.subreddit}: {post.title[:80]!r} -> {decision.reason}")
+            debug(f"[rejeitada] {post.platform}/{post.subreddit}: {post.title[:80]!r} -> {decision.reason}")
             continue
         message = build_message(post)
         if DRY_RUN:
@@ -1210,7 +1623,8 @@ def main() -> int:
             sent_fingerprints[fingerprint] = now.isoformat()
         batch_fingerprints.update(fingerprints)
         sent += 1
-        log(f"Enviada: {post.title[:80]} (r/{post.subreddit}, via {post.source})")
+        log(f"Enviada: {post.title[:80]} ({post.platform}"
+            f"{' r/' + post.subreddit if post.platform == 'Reddit' else ''}, via {post.source})")
         save_state(seen, meta)                # grava a cada envio: nada se perde se a execução cair
         time.sleep(TELEGRAM_PAUSE)
 
@@ -1218,6 +1632,12 @@ def main() -> int:
     # a próxima execução retenta o mesmo intervalo em vez de pular vagas.
     if ok > 0:
         meta["last_scan_at"] = now.isoformat()
+
+    if not DRY_RUN:
+        for key, count in seeded_now.items():
+            log(f"{key}: primeira varredura, {count} vagas já existentes registradas sem envio.")
+        seeded.update(key for key, (_name, answered, _err) in extra_results.items() if answered)
+        meta["seeded_sources"] = sorted(seeded)
 
     if not DRY_RUN:
         seen = prune_seen(seen, now)
@@ -1238,4 +1658,6 @@ def main() -> int:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--buttons-listener":
         sys.exit(telegram_buttons_listener())
+    if len(sys.argv) > 1 and sys.argv[1] == "--test-sources":
+        sys.exit(test_sources())
     sys.exit(main())
