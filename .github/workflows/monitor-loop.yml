@@ -10,6 +10,11 @@ name: Reddit Job Hunter (loop)
 
 on:
   workflow_dispatch:
+    inputs:
+      test_sources:
+        description: "Só testar as plataformas (não envia nada ao Telegram e não inicia o loop)"
+        type: boolean
+        default: false
   schedule:
     - cron: "17 * * * *"
 
@@ -39,7 +44,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Marque "test_sources" ao clicar em Run workflow: mostra no log o que cada
+      # plataforma consegue ler a partir dos servidores do GitHub.
+      - name: Test sources
+        if: ${{ inputs.test_sources }}
+        env:
+          PYTHONUNBUFFERED: "1"
+          EXTRA_RSS_FEEDS: ${{ vars.EXTRA_RSS_FEEDS }}
+        run: python -u main.py --test-sources
+
       - name: Run job hunter in a loop
+        if: ${{ !inputs.test_sources }}
         env:
           PYTHONUNBUFFERED: "1"
           REDDIT_SOURCE: auto
@@ -47,6 +62,10 @@ jobs:
           PAUSE_SECONDS: "300"    # 5 min entre varreduras do Reddit
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Feeds extras (Upwork, X/Twitter...): Settings > Secrets and variables > Actions > Variables
+          EXTRA_RSS_FEEDS: ${{ vars.EXTRA_RSS_FEEDS }}
+          # DISABLE_SOURCES: "contra,mandy"   # descomente para desligar plataformas
+          # REACTION_APPLIED: "🔥"            # opcional: troca o emoji da reação
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -73,7 +92,7 @@ jobs:
       # Dispara a próxima execução. workflow_dispatch feito com o GITHUB_TOKEN é
       # permitido pelo GitHub (as demais ações com esse token não geram novos runs).
       - name: Relaunch
-        if: always()
+        if: ${{ always() && !inputs.test_sources }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
