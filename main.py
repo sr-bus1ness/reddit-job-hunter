@@ -1,5 +1,5 @@
 """
-BOT JOB VIDEO EDITOR
+Sr.Business Job-Bot
 ====================
 Monitora subreddits e outras plataformas em busca de vagas de edição de vídeo
 e envia ao Telegram.
@@ -1228,7 +1228,7 @@ def update_source_health(meta: dict, results: dict, now: datetime) -> None:
     last_alert = parse_date(meta.get("last_sources_alert"))
     if down and not DRY_RUN and (not last_alert or now - last_alert >= SOURCE_ALERT_EVERY):
         try:
-            send_telegram("⚠️ BOT JOB VIDEO EDITOR: fontes sem resposta há mais de "
+            send_telegram("⚠️ Sr.Business Job-Bot: fontes sem resposta há mais de "
                           f"{int(SOURCE_ALERT_AFTER.total_seconds() // 3600)}h:\n" + "\n".join(down))
             meta["last_sources_alert"] = now.isoformat()
         except Exception as exc:
@@ -1297,8 +1297,8 @@ def prune_seen(seen: dict, now: datetime) -> dict:
 # ============================================================================
 # TELEGRAM
 # ============================================================================
-def send_telegram(message: str, post_id: str | None = None) -> None:
-    """Envia a vaga com dois botões compactos: ❌ e ✅ (viram uma reação ao serem tocados)."""
+def send_telegram(message: str, post_id: str | None = None, html_mode: bool = False) -> None:
+    """Envia a vaga com dois botões compactos: 👎 e 👍 (viram uma reação ao serem tocados)."""
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -1309,11 +1309,13 @@ def send_telegram(message: str, post_id: str | None = None) -> None:
         "text": message,
         "disable_web_page_preview": True,
     }
+    if html_mode:
+        payload["parse_mode"] = "HTML"
     if post_id:
         payload["reply_markup"] = json.dumps({
             "inline_keyboard": [[
-                {"text": "❌", "callback_data": "discard"},
-                {"text": "✅", "callback_data": "applied"},
+                {"text": "👎", "callback_data": "discard"},
+                {"text": "👍", "callback_data": "applied"},
             ]]
         }, ensure_ascii=False)
 
@@ -1342,8 +1344,8 @@ def send_telegram(message: str, post_id: str | None = None) -> None:
 # ==========================================================================
 # BOTÕES DO TELEGRAM -> REAÇÃO NA PRÓPRIA MENSAGEM
 # ==========================================================================
-# O Telegram só aceita um conjunto fixo de emojis como reação (✅ e ❌ NÃO estão nele).
-# Por isso: ✅ vira 👍 e ❌ vira 👎. Dá para trocar por qualquer emoji permitido
+# O Telegram só aceita um conjunto fixo de emojis como reação. Botão 👍 reage com 👍 e
+# botão 👎 reage com 👎. Dá para trocar por qualquer emoji permitido
 # (👍 👎 🔥 🏆 💯 👌 🤝 🙈 😴 ...) pelas variáveis REACTION_APPLIED / REACTION_DISCARD.
 REACTION_APPLIED = os.environ.get("REACTION_APPLIED", "👍")
 REACTION_DISCARD = os.environ.get("REACTION_DISCARD", "👎")
@@ -1370,7 +1372,8 @@ def _telegram_api(method: str, payload: dict, timeout: int = 20) -> dict | None:
         return None
     if response.status_code != 200 or not data.get("ok"):
         # Não imprime a resposta completa: ela pode conter dados desnecessários.
-        log(f"Botões: Telegram recusou {method} (HTTP {response.status_code}).")
+        reason = str(data.get("description", ""))[:120] if isinstance(data, dict) else ""
+        log(f"Botões: Telegram recusou {method} (HTTP {response.status_code}) {reason}")
         return None
     return data
 
@@ -1467,29 +1470,56 @@ def telegram_buttons_listener() -> int:
                 offset = update_id + 1
 
 
+LINE = "-" * 24
+
+
+def script_bold(text: str) -> str:
+    """Letras em 'bold script' (Unicode): o Telegram não troca de fonte, então usamos estes símbolos."""
+    out = []
+    for ch in text:
+        if "A" <= ch <= "Z":
+            out.append(chr(0x1D4D0 + ord(ch) - ord("A")))
+        elif "a" <= ch <= "z":
+            out.append(chr(0x1D4EA + ord(ch) - ord("a")))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+BOT_NAME = "Sr.Business Job-Bot"
+
+
 def build_message(post: Post) -> str:
+    """Mensagem em HTML (enviada com parse_mode=HTML): todo texto de terceiros é escapado."""
+    esc = lambda value: html.escape(str(value), quote=False)
     title = re.sub(r"\s+", " ", post.title).strip()
     if len(title) > 250:
         title = title[:247] + "..."
     full_text = f"{post.title} {post.text}"
     local_date = post.created.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
     origin = f"Reddit · r/{post.subreddit}" if post.platform == "Reddit" else post.platform
-    extra = ""
+    lines = [
+        LINE,
+        f"<b>{script_bold(BOT_NAME)}</b>",
+        LINE,
+        "",
+        f"📡 {esc(origin)}",
+        f"📌 {esc(title)}",
+    ]
     if post.company:
-        extra += f"🏢 {post.company}\n"
+        lines.append(f"🏢 {esc(post.company)}")
     if post.location:
-        extra += f"📍 {post.location}\n"
-    return (
-        "🤖 BOT JOB VIDEO EDITOR\n\n"
-        f"📡 {origin}\n"
-        f"📌 {title}\n"
-        f"{extra}"
-        f"💰 {get_value(full_text)}\n"
-        f"🎬 {get_niche(post.title, post.text)}\n"
-        f"🌐 {get_language(post.title, post.text)}\n"
-        f"🕒 {local_date}\n\n"
-        f"🔗 {post.url}"
-    )
+        lines.append(f"📍 {esc(post.location)}")
+    lines += [
+        f"💰 {esc(get_value(full_text))}",
+        f"🎬 {esc(get_niche(post.title, post.text))}",
+        f"🌐 {esc(get_language(post.title, post.text))}",
+        f"🕒 {local_date}",
+        LINE,
+        esc(post.url),
+        LINE,
+    ]
+    return "\n".join(lines)
 
 
 
@@ -1541,7 +1571,7 @@ def update_health(meta: dict, ok: int, errors: list[str], now: datetime) -> None
             return
         try:
             send_telegram(
-                "⚠️ BOT JOB VIDEO EDITOR: sem acesso ao Reddit desde "
+                "⚠️ Sr.Business Job-Bot: sem acesso ao Reddit desde "
                 f"{failing_since.astimezone(ZoneInfo('America/Sao_Paulo')):%d/%m %H:%M} "
                 "(RSS e Arctic Shift falharam).\n"
                 f"Último erro: {errors[-1] if errors else 'desconhecido'}"
@@ -1614,7 +1644,7 @@ def main() -> int:
             batch_fingerprints.update(fingerprints)
             continue
         try:
-            send_telegram(message, post_id=post.id)
+            send_telegram(message, post_id=post.id, html_mode=True)
         except Exception as exc:
             log(f"Erro ao enviar para o Telegram: {exc}")
             continue
