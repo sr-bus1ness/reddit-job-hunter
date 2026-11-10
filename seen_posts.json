@@ -1,6 +1,6 @@
 {
   "meta": {
-    "last_scan_at": "2026-11-10T17:08:01.661047+00:00",
+    "last_scan_at": "2026-11-10T17:13:19.588499+00:00",
     "last_sources_alert": "2026-11-09T20:31:19.598256+00:00",
     "seeded_sources": [
       "99freelas",
@@ -204,6 +204,7 @@
       "2acc874ca600b53d457e21e72f3ce6199ab2cb0ce936beb7963becec2774e2eb": "2026-11-08T13:35:05.856442+00:00",
       "2b496a0e2850fe65114cfabf6cb271ea17e38034fd4e3280fe4760957c0e7735": "2026-11-08T14:52:35.349596+00:00",
       "2b77463eb606e69b5a7a7bc8a6325250e24971e5d2349b17e09ca4c2e1368f9f": "2026-11-10T03:49:04.241505+00:00",
+      "2bc0158c690aef19098076c5e701f612f4c7eb25a12d418c694ecccdf0bed141": "2026-11-10T17:13:19.588499+00:00",
       "2bc1ee18cb9332c7629a3d3a784bf1b827d4c77084802a325d0089acac81ae7d": "2026-11-08T10:22:55.555922+00:00",
       "2bd9d25e32b6204e67767c574e96fca26977c18688a4d116ba52c56ba46c786b": "2026-11-06T12:11:44.156702+00:00",
       "2c36d6baa9b205592f8fb3c463ca3d2dfb4e107367dd370600beb862c16f9683": "2026-11-06T12:11:44.156702+00:00",
@@ -1064,14 +1065,14 @@
       }
     },
     "source_last_run": {
-      "99freelas": "2026-11-10T16:57:47.457369+00:00",
-      "contra": "2026-11-10T16:57:47.457369+00:00",
+      "99freelas": "2026-11-10T17:13:19.588499+00:00",
+      "contra": "2026-11-10T17:13:19.588499+00:00",
       "infojobs": "2026-11-10T17:08:01.661047+00:00",
       "linkedin": "2026-11-10T17:08:01.661047+00:00",
-      "mandy": "2026-11-10T16:57:47.457369+00:00",
+      "mandy": "2026-11-10T17:13:19.588499+00:00",
       "onlinejobs": "2026-11-06T22:17:45.069945+00:00",
-      "productionhub": "2026-11-10T16:57:47.457369+00:00",
-      "workana": "2026-11-10T16:57:47.457369+00:00"
+      "productionhub": "2026-11-10T17:13:19.588499+00:00",
+      "workana": "2026-11-10T17:13:19.588499+00:00"
     },
     "started_at": "2026-11-03T23:10:52.857612+00:00"
   },
@@ -1706,8 +1707,8 @@
     "99freelas-contratacao-de-editor-de-videos-profissional-com-experiencia-em-capcut-pro-797348": "2026-11-09T13:48:49.730991+00:00",
     "99freelas-contratar-editor-de-videos-796903": "2026-11-06T20:44:51.990843+00:00",
     "99freelas-edicao-criativa-de-videos-para-reels-e-anuncios-796532": "2026-11-07T01:37:36.590133+00:00",
-    "99freelas-edicao-de-1-video-para-o-youtube-797229": "2026-11-10T16:57:47.457369+00:00",
-    "99freelas-edicao-de-30-videos-curtos-para-instagram-797523": "2026-11-10T16:57:47.457369+00:00",
+    "99freelas-edicao-de-1-video-para-o-youtube-797229": "2026-11-10T17:13:19.588499+00:00",
+    "99freelas-edicao-de-30-videos-curtos-para-instagram-797523": "2026-11-10T17:13:19.588499+00:00",
     "99freelas-edicao-de-30-videos-para-curso-online-797517": "2026-11-09T23:06:24.547132+00:00",
     "99freelas-edicao-de-pacote-com-12-reels-dinamicos-para-marca-pessoal-institucional-796007": "2026-11-06T14:15:51.370626+00:00",
     "99freelas-edicao-de-video-de-100-dias-no-roblox-796488": "2026-11-07T01:22:19.477163+00:00",
@@ -1734,13 +1735,14 @@
     "99freelas-edicao-de-videos-fotos-qualquer-coisa-796943": "2026-11-06T22:48:28.619705+00:00",
     "99freelas-edicao-de-videos-longos-fixo-corte-de-live-797226": "2026-11-08T19:30:10.470185+00:00",
     "99freelas-edicao-de-videos-para-canal-de-cultura-nerd-796022": "2026-11-06T14:46:56.771703+00:00",
+    "99freelas-edicao-de-videos-para-codm-797679": "2026-11-10T17:13:19.588499+00:00",
     "99freelas-edicao-de-videos-para-instagram-reels-796203": "2026-11-06T21:31:12.085479+00:00",
     "99freelas-edicao-de-videos-para-redes-sociais-797175": "2026-11-09T12:46:47.741480+00:00",
-    "99freelas-edicao-de-videos-para-reels-anuncios-e-podcasts-no-capcut-pro-797348": "2026-11-10T16:57:47.457369+00:00",
+    "99freelas-edicao-de-videos-para-reels-anuncios-e-podcasts-no-capcut-pro-797348": "2026-11-10T17:13:19.588499+00:00",
     "99freelas-edicao-de-videos-para-reels-e-redes-sociais-796680": "2026-11-06T21:31:12.085479+00:00",
     "99freelas-edicao-de-videos-para-youtube-infoprodutos-e-agencia-de-marketing-797126": "2026-11-10T16:57:47.457369+00:00",
     "99freelas-edicao-de-videos-para-youtube-reels-e-tiktok-796679": "2026-11-08T01:40:19.810999+00:00",
-    "99freelas-edicao-de-videos-para-youtube-sobre-cultura-nerd-797515": "2026-11-10T16:57:47.457369+00:00",
+    "99freelas-edicao-de-videos-para-youtube-sobre-cultura-nerd-797515": "2026-11-10T17:13:19.588499+00:00",
     "99freelas-editar-video-sobre-meu-produto-797144": "2026-11-09T23:52:31.509225+00:00",
     "99freelas-editor-de-video-para-conteudos-curtos-verticais-reels-tiktok-shorts-796832": "2026-11-08T18:59:13.087790+00:00",
     "99freelas-editor-de-video-para-vlog-no-youtube-797203": "2026-11-08T17:26:47.679565+00:00",
