@@ -1,6 +1,6 @@
 {
   "meta": {
-    "last_scan_at": "2026-11-12T08:22:17.935316+00:00",
+    "last_scan_at": "2026-11-12T08:27:28.134310+00:00",
     "last_sources_alert": "2026-11-11T20:38:20.967778+00:00",
     "seeded_sources": [
       "99freelas",
@@ -410,6 +410,7 @@
       "49527b902529fb901b727ebdb2f94cbe84ab4350957a98fc787aba153029be91": "2026-11-09T03:38:32.208385+00:00",
       "4954cf5dadc0b001ef414e1c42dfe3819b9cb9daf017b81bb260320c503772d6": "2026-11-09T05:36:47.358621+00:00",
       "497c451bb1475cde049a15e08e0bb0eefc0db1b30bbb2b6975687cd47f7b95e1": "2026-11-10T01:30:26.113364+00:00",
+      "49b10f186fad041e06a0025cb89f429be7d442654c486f20df0d6220e5fe9ac0": "2026-11-12T08:27:28.134310+00:00",
       "4a4879199a10da84f8bb172e2ea7bfa60d00f488fa7499eb3554ff321fcaf6cc": "2026-11-09T17:20:35.764950+00:00",
       "4a5ffc9dd76e789ab15c98c4d493326972876532fb9c33c4caee77c8c89ccd0b": "2026-11-04T15:06:39.272220+00:00",
       "4a84f57332b774fc44e191c64bbf42fbd9f272c7d289656da14b44e35d98149d": "2026-11-04T13:30:36.619918+00:00",
@@ -2208,6 +2209,7 @@
     "1xu6umj": "2026-11-12T07:51:26.351627+00:00",
     "1xu6v3k": "2026-11-12T07:51:26.351627+00:00",
     "1xu6yy9": "2026-11-12T08:01:47.050077+00:00",
+    "1xu7efs": "2026-11-12T08:27:28.134310+00:00",
     "99freelas-atriz-para-gravar-depoimento-ugc-vertical-para-anuncio-796729": "2026-11-06T22:17:45.069945+00:00",
     "99freelas-aula-particular-de-edicao-de-videos-com-ia-chatgpt-e-claude-796587": "2026-11-06T19:12:18.771153+00:00",
     "99freelas-contratacao-de-editor-de-videos-profissional-com-experiencia-em-capcut-pro-797348": "2026-11-09T13:48:49.730991+00:00",
