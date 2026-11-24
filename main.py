@@ -24,6 +24,15 @@ Variáveis de ambiente:
   REACTION_APPLIED / REACTION_DISCARD   emojis de reação (padrão 👍 / 👎)
   HIDE_BUTTONS_AFTER_CLICK=1   remove os botões depois do clique (padrão: mantém)
 
+Filtros (todos ligados por padrão; use 0 para desligar):
+  BLOCK_INDIA=0       volta a aceitar vagas da Índia/região, pagas em rúpias ou em hindi
+  BLOCK_HELP=0        volta a aceitar pedidos de ajuda e perguntas
+  BLOCK_UNPAID=0      volta a aceitar trabalho grátis, "divisão de lucro" e pago por views
+  BLOCK_ONSITE=0      volta a aceitar vagas presenciais fora do Brasil
+  MIN_USD_PER_VIDEO   piso por vídeo em dólar (padrão 5; 0 desliga)
+  MIN_USD_PER_HOUR    piso por hora em dólar (padrão 4; 0 desliga)
+  MIN_PRIORITY        0 = envia tudo que passou | 1 = média e alta | 2 = só alta (padrão 0)
+
 Teste das fontes novas (nada é enviado):  python main.py --test-sources
 """
 from __future__ import annotations
@@ -83,12 +92,13 @@ STRICT_SUBS = {
     "xtwitter",
 }
 
-# Subreddits dedicados a vagas/pedidos: contratação é implícita.
+# Subreddits de conversa: quase tudo é dúvida ou debate. Só passa com tag [HIRING]
+# ou um pedido claro de editor no título.
+DISCUSSION_SUBS = {"filmmakers", "videoediting", "videoeditors"}
+
+# Contratação implícita. Os subreddits de vagas NÃO entram aqui: muitos posts neles
+# são de editores se oferecendo, então exigimos sinal de contratação no título/texto.
 JOB_BOARD_SUBS = {
-    "findvideoeditors",
-    "hireaneditor",
-    "videoeditingjobs",
-    "videoeditingrequests",
     # Plataformas de vagas: todo anúncio já é uma contratação.
     "linkedin",
     "infojobs",
@@ -105,6 +115,26 @@ SEEN_FILE = os.environ.get("SEEN_FILE", "seen_posts.json")
 SOURCE_MODE = os.environ.get("REDDIT_SOURCE", "auto").strip().lower()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 DEBUG = os.environ.get("DEBUG") == "1"
+
+
+def _env_on(name: str) -> bool:
+    return (os.environ.get(name) or "1").strip() != "0"
+
+
+def _env_number(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+BLOCK_INDIA = _env_on("BLOCK_INDIA")
+BLOCK_HELP = _env_on("BLOCK_HELP")
+BLOCK_UNPAID = _env_on("BLOCK_UNPAID")
+BLOCK_ONSITE = _env_on("BLOCK_ONSITE")
+MIN_USD_PER_VIDEO = _env_number("MIN_USD_PER_VIDEO", 5)
+MIN_USD_PER_HOUR = _env_number("MIN_USD_PER_HOUR", 4)
+MIN_PRIORITY = int(_env_number("MIN_PRIORITY", 0))
 
 # O primeiro horário de execução fica salvo em seen_posts.json (meta.started_at).
 # Nas execuções seguintes, só buscamos posts desde a última varredura, com pequena
@@ -168,12 +198,15 @@ class Post:
     company: str = ""
     location: str = ""
     dated: bool = True            # False = a plataforma não informa data/hora confiável
+    author: str = ""
+    flair: str = ""               # etiqueta do post no Reddit (só vem pelo Arctic Shift)
 
 
 @dataclass
 class Decision:
     accepted: bool
     reason: str
+    category: str = ""            # agrupador usado no resumo do log
 
 
 class TextExtractor(HTMLParser):
@@ -248,6 +281,12 @@ def normalize_id(raw: str) -> str:
     if raw.startswith("t3_"):
         raw = raw[3:]
     return raw
+
+
+def normalize_author(raw: str) -> str:
+    """'/u/Fulano' (RSS) e 'Fulano' (Arctic Shift) viram 'fulano'."""
+    name = re.sub(r"^/?u/", "", (raw or "").strip()).lower()
+    return "" if name in ("[deleted]", "automoderator") else name
 
 
 # ============================================================================
@@ -374,6 +413,363 @@ OTHER_ROLES_RE = _rx(
     r"\bseo\b", r"\bmedia buyers?\b", r"\bvendedor\w*\b", r"\bdesenvolvedor\w*\b",
 )
 
+# ============================================================================
+# FILTROS DE QUALIDADE (Índia, pedidos de ajuda, grátis, autopromoção, presencial)
+# ============================================================================
+_MARKUP_RE = re.compile(r"[*~`#>\\​]+")
+
+
+def plain(text: str) -> str:
+    """Texto sem marcação do Reddit: '**INDIAN** editors' -> 'indian editors'."""
+    return re.sub(r"\s+", " ", _MARKUP_RE.sub(" ", text)).strip()
+
+
+_NEGATION_RE = re.compile(
+    r"\b(?:no|not|non|never|except|excluding|outside|without|don't|dont|doesn't|isn't|avoid|nao|sem)\b[^.!?]{0,18}$")
+
+
+def _search_positive(rx: re.Pattern, text: str):
+    """Como rx.search, mas ignora menções negadas ('no indian editors', 'outside india')."""
+    for m in rx.finditer(text):
+        if not _NEGATION_RE.search(text[max(0, m.start() - 30):m.start()]):
+            return m
+    return None
+
+
+# --- Índia e região -------------------------------------------------------------
+_SA_CITIES = (r"mumbai|delhi|new delhi|bangalore|bengaluru|hyderabad|chennai|kolkata|pune|noida|gurgaon|"
+              r"gurugram|ahmedabad|jaipur|lucknow|indore|kochi|surat|chandigarh|navi mumbai|dombivli|"
+              r"karachi|lahore|islamabad|rawalpindi|faisalabad|dhaka|chittagong|kathmandu")
+_EDITOR_NOUN = (r"(?:editors?|clippers?|freelancers?|applicants?|candidates?|designers?|animators?|"
+                r"outreachers?|talents?|students?)")
+
+RUPEE_RE = _rx(
+    r"[₹₨৳]",
+    r"\b(?:inr|pkr|bdt|rupees?|rupay|rupaye|lpa|lakhs?)\b",
+    r"\brs\b\s?[.:]?\s?\d",
+    r"\b\d[\d,.]*k?\s?(?:inr|pkr|bdt|rs)\b",
+    r"\b(?:upi|gpay|phonepe|phone pe|paytm)\b",
+)
+# Rúpias só são toleradas quando o post diz que aceita gente de fora.
+WORLDWIDE_RE = _rx(r"\bworld ?wide\b", r"\banywhere in the world\b", r"\bany country\b", r"\bany location\b",
+                   r"\binternational (?:editors?|applicants?|candidates?)\b",
+                   r"\beditors? from anywhere\b", r"\bglobally\b")
+INDIA_RE = _rx(
+    r"\bindia(?:ns?)?[\s-]{0,3}(?:only|based|residents?|citizens?|nationals?|preferred|required|"
+    r"are (?:required|preferred|allowed))\b",
+    rf"\bindian\s(?:[\w/'-]+\s){{0,4}}?{_EDITOR_NOUN}\b",
+    r"\bonly (?:for )?indians?\b",
+    r"\b(?:must|have to|has to|should|needs? to) be (?:an? |from |in |based in |located in )*(?:india|indian)\b",
+    # 'from India', mas não 'from India, Brazil or the Philippines'
+    r"\b(?:from|in|within|across|location ?[:-]?) india\b"
+    r"(?!\s?(?:,|/|&|and|or)\s?(?:the )?(?:philippines|brazil|latam|latin|africa|europe|usa?\b|uk\b|egypt|"
+    r"indonesia|vietnam|nigeria|any|anywhere|other))",
+    r"(?<!\d)\+91\b",
+    rf"\b(?:based|located|location|on-?site|office|editors?) ?(?:in|at|from|[:-])? ?[^.!?]{{0,25}}\b(?:{_SA_CITIES})\b",
+    rf"\b(?:{_SA_CITIES})[\s-]{{1,3}}based\b",
+)
+INDIA_TITLE_RE = _rx(r"\bindia\b(?! ?(?:,|/|and|or) ?(?:philippines|brazil|latam))", r"\bindians?\b", r"\bdesi\b",
+                     rf"\b(?:{_SA_CITIES}|blr|pakistan|pakistani|bangladesh|bangladeshi)\b")
+_SA_LANG = (r"(?:hindi|hindia|hinglish|urdu|telugu|tamil|malayalam|kannada|marathi|bengali|bangla|"
+            r"gujarati|punjabi|bhojpuri)")
+SA_LANG_RE = re.compile(
+    rf"\b{_SA_LANG}\b(?!\s?(?:(?:is|are|language|speaking)\s){{0,3}}(?:not (?:required|needed|necessary)|"
+    r"optional|a plus|bonus))")
+SA_SCRIPT_RE = re.compile(r"[ऀ-෿]{3,}")        # devanágari, bengali, tâmil, télugo...
+SA_LOCATION_RE = _rx(rf"\b(?:india|pakistan|bangladesh|nepal|sri lanka|{_SA_CITIES})\b")
+
+# --- contratação inequívoca (salva um post de ser tratado como ajuda/propaganda) -----
+_FILL = r"(?:(?!clients?\b|creators?\b|youtubers?\b|work\b|jobs?\b|as\b|if\b)[\w$+&/',.()-]+\s+){0,8}?"
+_ROLE = r"(?:editors?|clippers?|animators?|motion designers?|videomakers?|editor(?:es|a|as))"
+STRONG_HIRE_RE = _rx(
+    r"\b(?:we(?:'re| are)|i(?:'m| am|m)|now|currently) hiring\b",
+    r"^\W*hiring\b", r"\bhiring\W{0,3}$",
+    rf"\b(?:hiring|hire)\s+{_FILL}{_ROLE}\b",
+    rf"\b(?:looking|searching) (?:to (?:hire|work with|find|bring on)|for)\s+{_FILL}{_ROLE}\b",
+    rf"\b(?:i|we|i'm|am|my \w+|and) (?:really |urgently |just |also )?(?:need|needs|want|require|in need of)\s+{_FILL}{_ROLE}\b",
+    rf"^\W*(?:need|needed|wanted|want|seeking)\W+{_FILL}{_ROLE}\b",
+    r"\b(?:editors?|clippers?|animators?) (?:is |are )?(?:needed|wanted|required)\b",
+    r"\b(?:busco|buscamos|procuro|procuramos|preciso|precisamos|necesito|necesitamos|contrata-se|contratando)\b"
+    r"(?![^.!?]{0,30}\bcomo editor)[^.!?]{0,40}\b(?:editor\w*|videomaker)\b",
+    r"\b(?:cerco|cerchiamo|suche|suchen|recherche)\b[^.!?]{0,30}\b(?:editor\w*|montatore|cutter|clipper|monteur)\b",
+    r"\b(?:editor|cutter|clipper)\w* gesucht\b", r"\bgesucht\b",
+)
+# "If you're looking for an editor, DM me" é propaganda, não contratação.
+_CONDITIONAL_RE = re.compile(
+    r"\b(?:if|whether|are|r|do|when|who|anyone|any one|creators|somebody)\s(?:(?:you|u|anyone|who)(?:'re| are)?\s)?"
+    r"(?:currently |still |just |here )?(?:looking|searching|need|needs|want|wants|hiring|in need)\b")
+
+
+def wants_editor(text: str) -> bool:
+    """True se o texto diz claramente que o AUTOR procura um editor."""
+    return bool(STRONG_HIRE_RE.search(_CONDITIONAL_RE.sub(" ", text)))
+
+
+# --- pedidos de ajuda e perguntas ----------------------------------------------------
+HELP_TITLE_RE = _rx(
+    r"^\W*(?:please |pls |plz |guys |hey |someone |any ?one )*help\b",
+    r"\bhelp(?: me| us)?(?: out)? ?(?:please|pls|plz|needed|wanted|!+|\?+)",
+    r"\b(?:need|needs|needed|want|wanted|looking for|seeking|request(?:ing)?|require)\s+"
+    r"(?:(?:some|any|a little|a bit of|your|urgent|serious|quick|extra) )*"
+    r"(?:help|advices?|guidance|assistance|feedback|suggestions?|opinions?|recommendations?|tips|mentor\w*)\b",
+    r"\b(?:can|could|would|will) (?:you|u|y'?all|someone|somebody|any ?one|any1|any ?body)\b[^.!]{0,25}"
+    r"\b(?:help|edit|fix|make|tell|explain|suggest|remove|add|identify|enhance|recommend|find)\b",
+    r"\b(?:someone|any ?one|any ?body) (?:here )?(?:want|wants|wanna|willing|able|free) to (?:edit|help|fix|make)\b",
+    r"\b(?:where|how|why) (?:can|do|did|does|to|should|would|is|are|u)\b",
+    r"^\W*(?:is|are|does|do|should|why|when|where|who|which|what|has|have|am|could|would|how)\b[^?]*\?\s*$",
+    r"\btips?\b", r"\btroubleshoot\w*", r"\bfed up\b", r"\bscam\b", r"\b(?:software|laptop|pc)\b[^?]{0,20}\?",
+    r"\b(?:preciso de|necesito|algu[ei]m|alguien)(?: de)? (?:ajuda|ayuda|dicas?|me ajuda)\b", r"\bduvidas?\b",
+    r"\b(?:weekly|monthly|daily) thread\b", r"\bfree for all\b",
+)
+
+# --- trabalho sem pagamento --------------------------------------------------------
+UNPAID_RE = _rx(
+    r"(?<![\w-])(?<!feel )free[\s\W]{1,4}(?:(?:and|yet|extra|video|long[- ]form|short[- ]form|reels?|shorts?|tiktok|"
+    r"youtube|gaming|but|reels?/tiktok)\W{1,3}){0,3}(?:editors?|clippers?)\b",
+    r"\bfor free\b", r"\bone free\b", r"\bfree but credit\w*", r"\b(?:work|job) is free\b",
+    r"\b(?:voluntary|volunteers?|pro ?bono)\b",
+    r"\b(?:don'?t|do not|doesn'?t|didn'?t) (?:currently |really |yet )?have (?:any |the |a )?(?:money|budget|funds|fixed budget)\b",
+    r"\b(?:have|got|with|there(?:'s| is)) no (?:money|budget|funds)\b", r"^\W*no budget\b",
+    r"\b(?:can'?t|cannot|can not|unable to|not able to|won'?t be able to) (?:currently |really )?(?:pay|afford)\b"
+    r"(?! (?:much|more|a lot|upfront|hourly|that|you much|too much|crazy|high))",
+    r"\b(?:not|isn'?t) (?:a )?paid\b(?! (?:per|by|until|hourly))",
+    r"\bfuture paid\b", r"\bunpaid\b(?! (?:test|trial|work\?|overtime))",
+    r"\b(?:once|when|after|until) (?:i|we|the channel|my channel|it|this)(?:'?s| is| are| get| gets| start| starts|'?ll get| i? ?ll get)* ?(?:get )?moneti[sz]\w*",
+    r"\bgrow (?:with (?:me|us)|together)\b(?=[^$€£]*$)",
+    r"\bcollab(?:oration)? only\b", r"\bpassion project\b", r"\bedit (?:my|our) vid\w* for free\b",
+    r"\b(?:de graca|gratuitamente|trabalho voluntario|sem pagamento|gratis)\b",
+)
+REVSHARE_RE = _rx(r"\b(?:rev(?:enue)?|profit)s?[- ]?(?:share|sharing|split)\w*\b",
+                  r"\b\d{1,2} ?% (?:of )?(?:the |all |our |my )?(?:profit|revenue|earnings|commission)\w*\b",
+                  r"\bcommission[- ](?:only|based)\b")
+PAY_PER_VIEW_RE = _rx(
+    r"\bper (?:1 ?k|1[.,]?000|100 ?k|10 ?k|thousand|million|1 ?m|mil)\s?(?:\w+ )?(?:views?|visualizac\w+)\b",
+    r"/ ?(?:1 ?k|1000|1 ?m|100 ?k|million)\s?(?:views?)?\b", r"\b(?:rpm|cpm)\b", r"\bpaid (?:by|per|based on) (?:the )?views?\b",
+    r"\bpro (?:1[.,]?000 )?aufrufe?\b",
+    r"\bclipp(?:ing|er) (?:bridge|community|campaigns?|agency|server|program|network)\b",
+)
+
+# --- editor fazendo propaganda que escapava do filtro antigo ---------------------------
+PROMO_TITLE_RE = _rx(
+    # "Looking for a video editor?", "Need edits?"
+    r"^\W*(?:hey |hi |guys |still |are you |r u |u |you |do you |anyone |any ?one |who |struggling |tired )*"
+    r"(?:looking for|looking|searching for|need|needs|want|wants|in need of)\b(?![^?]*\b(?:my|our)\b)[^?]{0,80}"
+    r"(?:edit\w*|videos?|reels?|shorts|clips?|designer|animator|3d artist|thumbnails?)\b[^?.!]{0,40}\?",
+    r"\bneed videos that\b", r"\blet'?s (?:work|connect|collab\w*|grow|create)\b",
+    r"\b(?:i(?:'| wi)?ll|i can|i do|i cut and|i) edit\b", r"\bi'?ll (?:make|create|turn)\b",
+    r"\bediting services?\b", r"\bservices? (?:available|offered)\b", r"\boffering\b",
+    r"\b(?:get|your|a) free (?:sample|trial|edit|video|short)\b", r"\bfree (?:trial|sample|edits?|video edits?)\b",
+    r"\bfree for a limited\b", r"\b(?:disponivel|disponible|dispo)\b", r"\bfaccio\b", r"\bestoy buscando\b",
+    r"\bcheck (?:out )?(?:some of )?my\b", r"\b(?:my|recent|latest) (?:work|edits?|portfolio|showreel|reel|project)\b(?![^.]{0,30}\bneed)",
+    r"\b(?:recent|latest) editing project\b", r"\bbefore ?(?:and|/|&|vs|-|->|→)? ?after\b", r"\bfree video editor\b",
+    r"\blooking (?:to (?:edit|collab\w*|take on|get)|for (?:raw clips|raw footage|footage))\b", r"\bto practice\b",
+    r"\blooking (?:for|to work with) (?:[\w/&-]+\s){0,4}?(?:/\s)?"
+    r"(?:creators?|youtubers?|clients?|customers?|streamers?|influencers?)\b(?![^.]{0,40}\beditors?\b)",
+    r"\bbusco (?:un |una )?(?:creador\w*|youtuber\w*|clientes?)\b", r"\bcerco lavoro\b", r"\boffro\b",
+    r"\blooking for (?:[\w/-]+\s){0,8}?(?:work|jobs?|gigs?|hustle|internships?)\b(?![^.]{0,40}\beditors?\b)",
+    r"\b(?:need|want) (?:a |an |some )?(?:jobs?|side hustle|work|clients?|internship)\b",
+    r"\bif any ?(?:one|body) (?:is|needs?|wants?)\b", r"\bi(?:'m| am|m) an? (?:[\w-]+ )?(?:clipper|editor)\b",
+    r"\bbusco (?:mis|mi) primer\w*\b", r"\bi need side\b",
+    r"\bverified remote roles\b", r"\byour next (?:creative )?job\b",
+    r"\bwant to work with an? (?:video )?edit\w+ agency\b", r"\bno more chasing\b", r"\bnew to editing\b",
+    r"\b(?:freelance )?video editor with \d+", r"\bvideo editor here\b", r"\bopen for\b", r"\banyone needs?\b",
+    r"\bwe (?:edit|create|make|provide|offer)\b", r"\btestimonials?\b", r"\bdm'?s? (?:are |is )?open\b",
+    r"\b(?:sell|selling|vendo)\b", r"\bchamba\b", r"\bportfolio (?:below|inside|in bio)\b",
+)
+PROMO_ANY_RE = _rx(
+    # "I'm Lucas, a video editor" / "I am O3vu and editor"
+    r"\bi(?:'m| am|m) (?:(?!looking|need|seeking|hiring|searching|want|trying|after|in)[\w'.-]+,? ){1,4}"
+    r"(?:a|an|and) (?:(?!looking)[\w&/-]+ ){0,4}(?:editors?|clippers?)\b",
+    r"\b(?:we|i) (?:offer|provide) (?:[\w-]+ ){0,4}(?:edit\w*|services?|short|long|videos?)\b",
+    r"\b(?:currently |now )?offering (?:my |free |professional |affordable )*(?:video |editing |edits?)",
+    r"\bif you (?:want|need|are looking for|'re looking for) (?:to edit |an? |any |your )*(?:videos?|edit\w*)\b[^.!?]{0,60}\b(?:dm|contact|message|reach)\b",
+    r"\bi(?:'ve| have) been (?:a |an )?(?:editing|video editor|working as)\b", r"\bi can do [^.!?]{0,30}edits?\b",
+    r"\b(?:soy|sou|somos) editor\w*\b", r"\bi(?:'m| am) (?:currently )?available\b", r"\bmy dms are open\b",
+    r"\bif you(?:'re| are) looking for (?:[\w-]+ ){0,5}edit\w*\b",
+    r"\bi help (?:creators|businesses|brands|turn|you)\b", r"\blooking to (?:take on|land|work with (?:youtubers|creators|clients))\b",
+)
+
+# --- vaga já preenchida, presencial, fora do cargo ----------------------------------
+CLOSED_TITLE_RE = _rx(r"[\[\(](?:closed|filled|hired|editor found|found)[\]\)]", r"\b(?:position|role|job) (?:is )?(?:closed|filled)\b")
+ONSITE_RE = _rx(r"\bon-?site\b(?! content)", r"\bin-?office\b", r"\bwork from office\b", r"\bwfo\b", r"\bin[- ]person (?:role|job|position|only)\b",
+                r"\bno remote\b", r"\bnot remote\b", r"\b(?:locals?|local editors?) only\b")
+REMOTE_RE = re.compile(r"(?<!no )(?<!not )\b(?:remote(?:ly)?|work from home|wfh|worldwide|anywhere|remoto|home office)\b")
+BRAZIL_RE = re.compile(r"\b(?:brasil|brazil|sao paulo|rio de janeiro|curitiba|belo horizonte|porto alegre|"
+                       r"florianopolis|brasilia|salvador|recife|fortaleza|campinas)\b")
+_OTHER_COUNTRY = (r"(?:ph|the philippines|philippines|filipin[oa]s?|pinoy|usa|u\.s\.a?\.?|the us|united states|the uk|uk|canada|"
+                  r"europe|eu|germany|france|italy|spain|nigeria|kenya|egypt|indonesia|vietnam|turkey|mexico|argentina)")
+COUNTRY_ONLY_RE = _rx(
+    rf"\b(?:only (?:from|in|for|hiring from)|must (?:be|live|reside) (?:(?:from|based|located|living|in|a) ?)+|exclusively (?:from|in))\s?{_OTHER_COUNTRY}\b",
+    rf"\b{_OTHER_COUNTRY}[\s-]{{0,3}}(?:based )?only\b",
+    r"[\(\[]\s?(?:us|uk|eu|europe|ph|usa)[\s-](?:only|based)\s?[\)\]]",
+    r"\b(?:editors?|clippers?|va) from (?:the )?(?:ph|philippines)\b",
+)
+# LinkedIn: vaga presa a outro país raramente aceita brasileiro. Passam Brasil,
+# América Latina, "worldwide" e as que dizem "remote" no título.
+OPEN_LOCATION_RE = re.compile(r"\b(?:brasil|brazil|latin america|latam|america latina|south america|worldwide|remote|remoto)\b")
+NOT_EDITOR_TITLE_RE = _rx(r"\boutreach\w*\b", r"\bsituational comedy\b", r"\bactors?\b(?![^.]{0,30}\beditor)",
+                          r"\bteach me\b", r"\breferral (?:partner|bounty)\b", r"\bestado de cuenta\b",
+                          r"\bbank statements?\b", r"\bphoto editing\b(?!.*\bvideo)",
+                          r"\blooking to work with (?:[\w-]+ ){0,3}creators\b", r"^(?!.*\bedit).*\bvideographers?\b", r"\btesting my\b", r"\baffiliate\b", r"\bappointment setter\b",
+                          r"\bbuy a\b", r"\bsong\b[^.]{0,20}\bmedley\b", r"\b(?:promo(?:te|ting)|launch(?:ed|ing)) my (?:app|tool)\b")
+BLOCKED_FLAIRS = {"free": "grátis", "unpaid": "grátis", "for hire": "autopromoção", "help": "ajuda", "question": "ajuda",
+                  "feedback": "ajuda", "advice": "ajuda", "discussion": "ajuda", "editor found": "encerrada",
+                  "closed": "encerrada", "filled": "encerrada", "announcement": "ajuda", "showcase": "autopromoção"}
+
+
+def flair_key(flair: str) -> str:
+    """'[For Hire]' e ':emoji:Paid:emoji:' -> 'for hire' / 'paid'."""
+    return re.sub(r"[^a-z ]", "", re.sub(r":[^:\s]*:", " ", fold(flair))).strip()
+
+
+def usd_top(value: str, unit: str) -> float | None:
+    """Teto em dólar por unidade, a partir de get_value ('US$ 2–4/vídeo' -> 4.0)."""
+    m = re.fullmatch(rf"US\$ (?:[\d.,]+–)?([\d.,]+)/{unit}", value)
+    return float(m.group(1).replace(".", "").replace(",", ".")) if m else None
+
+
+def quality_block(post: Post, title: str, body: str, has_tag: bool) -> tuple[str, str] | None:
+    """(categoria, motivo) se a vaga deve ser descartada, ou None. Recebe textos já dobrados."""
+    title, body = plain(title), plain(body)
+    text = f"{title} {body}".strip()
+    head = f"{title}. {body[:400]}"
+    sub = post.subreddit.lower()
+    # Em plataformas de vagas o anúncio é sempre do contratante e o título é curto.
+    is_board = sub in JOB_BOARD_SUBS
+    value = get_value(f"{post.title}. {post.text}")
+    has_money = value not in ("Não informado", "A combinar") and not re.match(r"\S+ 0(?![\d,.])", value)
+
+    def hit(category: str, m) -> tuple[str, str]:
+        return category, f"{category}: '{m.group(0).strip()[:60]}'"
+
+    flair = flair_key(post.flair)
+    if flair in BLOCKED_FLAIRS:
+        category = BLOCKED_FLAIRS[flair]
+        enabled = {"grátis": BLOCK_UNPAID, "ajuda": BLOCK_HELP}.get(category, True)
+        # As etiquetas são escolhidas pelo autor e muitos erram: quem pede um editor no título fica.
+        hirer = has_tag or (not PROMO_TITLE_RE.search(title) and (
+            (category in ("autopromoção", "ajuda") and wants_editor(title))
+            or (category == "autopromoção" and wants_editor(body[:600]))))
+        if enabled and (category == "encerrada" or not hirer):
+            return category, f"{category}: flair '{flair}'"
+
+    m = CLOSED_TITLE_RE.search(title)
+    if m:
+        return hit("encerrada", m)
+
+    if BLOCK_INDIA:
+        m = SA_LOCATION_RE.search(fold(post.location))
+        if m:
+            return hit("índia/região", m)
+        m = SA_SCRIPT_RE.search(f"{post.title} {post.text}")
+        if m:
+            return hit("índia/região", m)
+        m = (_search_positive(INDIA_TITLE_RE, title) or _search_positive(INDIA_RE, text)
+             or _search_positive(SA_LANG_RE, text))
+        if m:
+            return hit("índia/região", m)
+        m = _search_positive(RUPEE_RE, text)
+        if m and not WORLDWIDE_RE.search(text):
+            return hit("rúpias", m)
+
+    if BLOCK_ONSITE:
+        if sub == "linkedin" and post.location and not OPEN_LOCATION_RE.search(f"{fold(post.location)} {title}"):
+            return "presencial", f"outro país: '{post.location[:40]}'"
+        if not is_board and not BRAZIL_RE.search(text) and not REMOTE_RE.search(text):
+            m = ONSITE_RE.search(text)
+            if m:
+                return hit("presencial", m)
+
+        if not is_board and not BRAZIL_RE.search(text):
+            m = _search_positive(COUNTRY_ONLY_RE, text)
+            if m:
+                return hit("só outro país", m)
+
+    if BLOCK_UNPAID:
+        if not has_money and re.match(r"\S+ 0", value):
+            return "grátis", f"grátis: {value}"
+        m = _search_positive(UNPAID_RE, text)
+        if m and not (has_money and m.start() > len(title)):
+            return hit("grátis", m)
+        if "/" not in value:
+            m = PAY_PER_VIEW_RE.search(text)
+            if m:
+                return hit("pago por views", m)
+        if not has_money:
+            m = REVSHARE_RE.search(text)
+            if m:
+                return hit("divisão de lucro", m)
+
+    if not is_board and not has_tag:
+        body_wants = wants_editor(body[:600])
+        strong = body_wants or wants_editor(title)
+        # "Looking for an editor?" no título imita contratação; só o texto (ou "hiring") a confirma.
+        confirmed = body_wants or bool(re.search(r"\bhiring\b", title))
+        m = PROMO_TITLE_RE.search(title)
+        if m and not confirmed:
+            return hit("autopromoção", m)
+        m = PROMO_ANY_RE.search(head)
+        if m and not confirmed:
+            return hit("autopromoção", m)
+        if BLOCK_HELP:
+            m = HELP_TITLE_RE.search(title)
+            if m and not (strong or has_money):
+                return hit("ajuda", m)
+        if sub in DISCUSSION_SUBS and not (
+                wants_editor(title) or re.search(r"\bhiring\s?[:!-]|\bpaid (?:\w+ )?editor|\beditor\b.*[$€£]\s?\d", title)):
+            return "ajuda", "sub de conversa sem pedido claro de editor no título"
+
+    if not is_board:
+        m = NOT_EDITOR_TITLE_RE.search(title)
+        if m:
+            return hit("outro cargo", m)
+
+    for unit, floor in (("vídeo", MIN_USD_PER_VIDEO), ("hora", MIN_USD_PER_HOUR)):
+        top = usd_top(value, unit)
+        if top is not None and top < floor:
+            return "paga pouco", f"paga pouco: {value}"
+    return None
+
+
+# --- prioridade ------------------------------------------------------------------
+_LONG_TERM_RE = _rx(r"\blong[- ]term\b", r"\bongoing\b", r"\bfull[- ]time\b", r"\bmonthly\b", r"\bretainer\b",
+                    r"\bper (?:week|month)\b", r"\bweekly\b", r"\blongo prazo\b", r"\bfixo\b")
+_TEST_RE = _rx(r"\b(?:free|unpaid) (?:test|trial)\b", r"\btrial (?:edit|video) (?:is |will be )?(?:free|unpaid)\b")
+_GOOD_PAY = {"vídeo": 30, "hora": 15, "minuto": 10, "mês": 500, "semana": 125, "dia": 80, "projeto": 80}
+PRIORITY_LABELS = ("⚪ Prioridade baixa", "🟡 Prioridade média", "🟢 Prioridade alta")
+
+
+def is_good_pay(value: str) -> bool:
+    m = re.fullmatch(r"(R\$|US\$|€|£|CA\$|A\$) (?:[\d.,]+–)?([\d.,]+)(?:/(\S+)| \((projeto)\))?", value)
+    if not m:
+        return False
+    amount = float(m.group(2).replace(".", "").replace(",", "."))
+    if m.group(1) == "R$":
+        amount /= 5
+    return amount >= _GOOD_PAY.get(m.group(3) or m.group(4) or "projeto", 80)
+
+
+def priority(post: Post) -> int:
+    """0 = baixa, 1 = média, 2 = alta."""
+    text = plain(fold_body(f"{post.title} {post.text}"))
+    value = get_value(f"{post.title}. {post.text}")
+    score = 0
+    if value not in ("Não informado", "A combinar"):
+        score += 2
+    if is_good_pay(value):
+        score += 2
+    if _LONG_TERM_RE.search(text):
+        score += 1
+    if title_tags(fold(post.title)) & HIRING_TAGS:
+        score += 1
+    if len(post.text) >= 250:
+        score += 1
+    if post.subreddit.lower() in JOB_BOARD_SUBS:
+        score += 2                        # listagens não trazem descrição: começam em "média"
+    if _TEST_RE.search(text):
+        score -= 1
+    return 2 if score >= 5 else 1 if score >= 2 else 0
+
 
 def title_tags(title: str) -> set[str]:
     return {t.strip() for t in _TAG_RE.findall(title)}
@@ -404,8 +800,8 @@ def classify(post: Post) -> Decision:
     sub = post.subreddit.lower()
     body_head = body[:600]
 
-    def no(reason: str) -> Decision:
-        return Decision(False, reason)
+    def no(reason: str, category: str = "não é vaga de edição") -> Decision:
+        return Decision(False, reason, category)
 
     if post.removed or body in ("[removed]", "[deleted]"):
         return no("post removido/deletado")
@@ -435,6 +831,10 @@ def classify(post: Post) -> Decision:
         if m:
             return no(f"pergunta/discussão: '{m.group(0)}'")
 
+    blocked = quality_block(post, title, body, has_tag)
+    if blocked:
+        return no(blocked[1], blocked[0])
+
     # 3) o cargo precisa ser edição de vídeo
     if find_video_role(title, sub) is not None:
         role = "cargo no título"
@@ -451,7 +851,9 @@ def classify(post: Post) -> Decision:
         role = "cargo no texto"
 
     # 4) precisa ser contratação
-    title_intent = has_tag or bool(HIRING_RE.search(title))
+    title_intent = has_tag or bool(HIRING_RE.search(title)) or wants_editor(title) \
+        or bool(re.search(r"\bpaid\b(?! (?:ads?|social|media))|[\[\(]\s?[$€£]\s?\d|\bi want (?:the )?best\b"
+                          r"|\beditor\b.*[$€£]\s?\d+ ?(?:/|per )", title))
     body_intent = bool(HIRING_RE.search(body_head))
     if sub in STRICT_SUBS:
         if not title_intent:
@@ -782,6 +1184,7 @@ def parse_rss(content: bytes) -> list[Post]:
             subreddit=sub,
             created=created,
             source="rss",
+            author=normalize_author(entry.findtext("a:author/a:name", "", _ATOM)),
         ))
     return posts
 
@@ -818,16 +1221,27 @@ def post_from_arctic(item: dict) -> Post | None:
         created=created,
         source="arctic",
         removed=removed,
+        author=normalize_author(item.get("author") or ""),
+        flair=item.get("link_flair_text") or "",
     )
 
 
 def fetch_arctic(sub: str, since: datetime) -> list[Post]:
-    resp = http_get(ARCTIC_URL, params={
+    params = {
         "subreddit": sub,
         "after": since.strftime("%Y-%m-%d"),   # o filtro fino por hora é feito localmente
         "limit": 50,
         "sort": "desc",
-    })
+    }
+    for attempt in range(3):
+        try:
+            resp = http_get(ARCTIC_URL, params=params)
+            break
+        except FetchError as exc:
+            # 422 = "Timeout. Maybe slow down a bit": passageiro, vale tentar de novo.
+            if exc.status != 422 or attempt == 2:
+                raise
+            time.sleep(4)
     try:
         data = resp.json()
     except ValueError:
@@ -917,7 +1331,9 @@ BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
 }
-DISABLED_SOURCES = {s.strip().lower() for s in os.environ.get("DISABLE_SOURCES", "").split(",") if s.strip()}
+# Mandy e ProductionHUB respondem HTTP 403 aos servidores do GitHub desde 06/11/2026.
+DISABLED_SOURCES = {s.strip().lower()
+                    for s in (os.environ.get("DISABLE_SOURCES") or "mandy,productionhub").split(",") if s.strip()}
 SOURCE_ALERT_AFTER = timedelta(hours=6)   # avisa se uma fonte ficar fora do ar por este tempo
 SOURCE_ALERT_EVERY = timedelta(hours=24)  # no máximo um aviso de fontes por dia
 
@@ -1050,7 +1466,12 @@ def fetch_board(board: Board) -> list[Post]:
 
 # --- LinkedIn (endpoint público de vagas, sem login) ---------------------------
 LINKEDIN_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-LINKEDIN_QUERIES = ("video editor", "editor de vídeo", "short form video editor")
+LINKEDIN_QUERIES = (
+    ("editor de vídeo", "Brazil"),
+    ("video editor", "Brazil"),
+    ("video editor", "Latin America"),
+    ("remote video editor", "Worldwide"),
+)
 
 
 def parse_linkedin(markup: str) -> list[Post]:
@@ -1086,10 +1507,10 @@ def fetch_linkedin() -> list[Post]:
     found: dict[str, Post] = {}
     errors: list[str] = []
     answered = 0
-    for keywords in LINKEDIN_QUERIES:
+    for keywords, location in LINKEDIN_QUERIES:
         try:
             resp = http_get(LINKEDIN_URL, headers=BROWSER_HEADERS, params={
-                "keywords": keywords, "location": "Worldwide",
+                "keywords": keywords, "location": location,
                 "f_TPR": "r86400", "sortBy": "DD", "start": 0,
             })
         except FetchError as exc:
@@ -1297,7 +1718,8 @@ def prune_seen(seen: dict, now: datetime) -> dict:
 # ============================================================================
 # TELEGRAM
 # ============================================================================
-def send_telegram(message: str, post_id: str | None = None, html_mode: bool = False) -> None:
+def send_telegram(message: str, post_id: str | None = None, html_mode: bool = False,
+                  silent: bool = False) -> None:
     """Envia a vaga com dois botões compactos: 👎 e 👍 (viram uma reação ao serem tocados)."""
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -1309,6 +1731,8 @@ def send_telegram(message: str, post_id: str | None = None, html_mode: bool = Fa
         "text": message,
         "disable_web_page_preview": True,
     }
+    if silent:
+        payload["disable_notification"] = True      # chega sem som nem vibração
     if html_mode:
         payload["parse_mode"] = "HTML"
     if post_id:
@@ -1503,6 +1927,7 @@ def build_message(post: Post) -> str:
         f"<b>{script_bold(BOT_NAME)}</b>",
         LINE,
         "",
+        PRIORITY_LABELS[priority(post)],
         f"📡 {esc(origin)}",
         f"📌 {esc(title)}",
     ]
@@ -1525,17 +1950,29 @@ def build_message(post: Post) -> str:
 
 def post_fingerprints(post: Post) -> set[str]:
     """Chaves para reconhecer a mesma vaga mesmo com título diferente entre subreddits."""
-    import hashlib
-
     title = fold_body(post.title)
     body = re.sub(r"\s+", " ", fold_body(post.text)).strip()
 
     def digest(value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
+    extra: set[str] = set()
+    if post.platform == "Reddit":
+        # Mesmo título longo em vários subreddits, ou o mesmo autor repostando com outro
+        # título. Gravar a janela atual e a anterior evita furo na virada da janela.
+        words = re.findall(r"[a-z0-9]+", title)
+        stamp = post.created.timestamp()
+        for back in (0, 1):
+            if len(words) >= 6:
+                extra.add(digest(f"title:{int(stamp // (2 * 86400)) - back}|{' '.join(words)}"))
+            if post.author:
+                extra.add(digest(f"author:{int(stamp // 86400) - back}|{post.author}"))
+    elif post.company:
+        # O LinkedIn publica a mesma vaga em dezenas de cidades.
+        extra.add(digest(f"company:{fold(post.company)}|{title}"))
     # Listagens sem descrição: títulos iguais ("Video Editor") de vagas diferentes não são duplicata.
     url_key = f"|{post.url}" if len(body) < 40 else ""
-    fingerprints = {digest(f"title+body:{title}|{body}{url_key}")}
+    fingerprints = {digest(f"title+body:{title}|{body}{url_key}")} | extra
     # Crossposts às vezes recebem títulos diferentes, mas mantêm a descrição inteira.
     # A chave extra só é usada quando há uma descrição longa e relativamente específica.
     if len(body) >= 180 and len(body.split()) >= 30:
@@ -1621,6 +2058,7 @@ def main() -> int:
     fresh.sort(key=lambda p: p.created)       # do mais antigo ao mais novo
 
     sent = 0
+    blocked_count: dict[str, int] = {}
     sent_fingerprints = meta.setdefault("sent_fingerprints", {})
     batch_fingerprints: set[str] = set()
     for post in fresh:
@@ -1636,7 +2074,13 @@ def main() -> int:
 
         decision = classify(post)
         if not decision.accepted:
+            blocked_count[decision.category] = blocked_count.get(decision.category, 0) + 1
             debug(f"[rejeitada] {post.platform}/{post.subreddit}: {post.title[:80]!r} -> {decision.reason}")
+            continue
+        level = priority(post)
+        if level < MIN_PRIORITY:
+            blocked_count["prioridade baixa"] = blocked_count.get("prioridade baixa", 0) + 1
+            debug(f"[prioridade {level}] {post.platform}/{post.subreddit}: {post.title[:80]!r}")
             continue
         message = build_message(post)
         if DRY_RUN:
@@ -1644,7 +2088,7 @@ def main() -> int:
             batch_fingerprints.update(fingerprints)
             continue
         try:
-            send_telegram(message, post_id=post.id, html_mode=True)
+            send_telegram(message, post_id=post.id, html_mode=True, silent=level == 0)
         except Exception as exc:
             log(f"Erro ao enviar para o Telegram: {exc}")
             continue
@@ -1679,6 +2123,9 @@ def main() -> int:
         f"novos desde o último cursor: {len(fresh)} | vagas enviadas: {sent}"
     )
     log(f"Monitorando posts publicados a partir de {started_at.astimezone(ZoneInfo('America/Sao_Paulo')):%d/%m/%Y %H:%M:%S}.")
+    if blocked_count:
+        log("Descartadas neste ciclo: " + ", ".join(
+            f"{name} {count}" for name, count in sorted(blocked_count.items(), key=lambda kv: -kv[1])))
     if errors and ok == 0:
         log("ATENÇÃO: nenhuma fonte respondeu nesta execução.")
     return 0
